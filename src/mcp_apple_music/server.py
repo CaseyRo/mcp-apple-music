@@ -15,9 +15,11 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from . import signin
 from .apple_api import AppleMusicAPI
+from .apple_web import AppleWebPlayer
 from .auth import BearerTokenVerifier
 from .config import settings
 from .devtoken import DeveloperToken
+from .library import Library
 from .rails import AppleError, UserTokenRejected
 from .store import APPLE_USER_TOKEN, Store
 from .usage import UsageMiddleware
@@ -72,6 +74,19 @@ def apple_api() -> AppleMusicAPI:
         user_token=lambda: store().valid_token(APPLE_USER_TOKEN),
         on_user_token_rejected=lambda: store().mark_token_invalid(APPLE_USER_TOKEN),
     )
+
+
+@functools.cache
+def apple_web() -> AppleWebPlayer:
+    return AppleWebPlayer(
+        user_token=lambda: store().valid_token(APPLE_USER_TOKEN),
+        on_user_token_rejected=lambda: store().mark_token_invalid(APPLE_USER_TOKEN),
+    )
+
+
+@functools.cache
+def library() -> Library:
+    return Library(apple_api(), apple_web())
 
 
 def public_url() -> str:

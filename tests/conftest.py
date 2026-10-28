@@ -19,13 +19,17 @@ def keypair() -> tuple[str, ec.EllipticCurvePublicKey]:
 
 
 @pytest.fixture(autouse=True)
-def isolated_state(tmp_path, monkeypatch):
-    """Every test gets its own data dir and fresh server state; nothing touches ./data."""
+def isolated_state(request, tmp_path, monkeypatch):
+    """Every test gets its own data dir and fresh server state; nothing touches ./data.
+
+    Live tests are the exception: they need the real data dir and its user token.
+    """
     from mcp_apple_music import server as srv
     from mcp_apple_music.config import settings
 
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
-    cached = (srv.store, srv.developer_token, srv.apple_api)
+    if request.node.get_closest_marker("live") is None:
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+    cached = (srv.store, srv.developer_token, srv.apple_api, srv.apple_web, srv.library)
     for f in cached:
         f.cache_clear()
     yield

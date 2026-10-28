@@ -2,7 +2,7 @@
 
 Only what the documented API cannot do goes through here: removing playlist tracks,
 renaming and deleting playlists, plus the track listing whose IDs removal needs.
-Every amp-api call in this server lives in this module (see docs/adr/0001).
+Every amp-api call in this server lives in this module (see docs/decisions/0001).
 
 amp-api accepts the AMPWebPlay token embedded in the web player's public JS bundle,
 not our own developer token, and needs ``Origin: https://music.apple.com``. The
