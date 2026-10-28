@@ -16,3 +16,20 @@ def keypair() -> tuple[str, ec.EllipticCurvePublicKey]:
         serialization.NoEncryption(),
     ).decode()
     return pem, key.public_key()
+
+
+@pytest.fixture(autouse=True)
+def isolated_state(tmp_path, monkeypatch):
+    """Every test gets its own data dir and fresh server state; nothing touches ./data."""
+    from mcp_apple_music import server as srv
+    from mcp_apple_music.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    cached = (srv.store, srv.developer_token, srv.apple_api)
+    for f in cached:
+        f.cache_clear()
+    yield
+    if srv.store.cache_info().currsize:
+        srv.store().close()
+    for f in cached:
+        f.cache_clear()

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # Bearer token auth for the MCP endpoint
     mcp_api_key: SecretStr = SecretStr("")
 
+    # Base URL sign-in links point at; defaults to http://127.0.0.1:<port>.
+    public_url: str = ""
+
     # All mutable state (SQLite) lives here; mount a volume on it in Docker.
     data_dir: Path = Path("data")
 

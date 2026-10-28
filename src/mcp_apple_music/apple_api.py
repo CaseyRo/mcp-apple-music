@@ -42,6 +42,10 @@ class AppleMusicAPI(RailClient):
 
     # -- reads ---------------------------------------------------------------
 
+    def forget_storefront(self) -> None:
+        """A new Music User Token may belong to another account's storefront."""
+        self._storefront = None
+
     async def storefront(self) -> str:
         if self._storefront is None:
             resp = await self._request("GET", "/v1/me/storefront", user=True)
