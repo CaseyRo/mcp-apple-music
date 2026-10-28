@@ -1,0 +1,54 @@
+[project]
+name = "mcp-apple-music"
+version = "0.1.0"
+description = "MCP server for Apple Music: catalog and library search, playlist management, and rolling mirrored playlists"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [{ name = "Casey Romkes" }]
+dependencies = [
+    "fastmcp>=4.0.10,<5.0.0",
+    "httpx>=0.28.1",
+    "pydantic>=2.12",
+    "pydantic-settings>=2.14.2",
+    "pyjwt[crypto]>=2.10",
+    # Security floors (transitive deps of fastmcp; pinned to address CVEs)
+    "authlib>=1.7.0",            # GHSA: CSRF in token cache handling
+    "python-multipart>=0.0.32",  # GHSA: DoS via unbounded multipart headers
+]
+
+[project.urls]
+Homepage = "https://github.com/CaseyRo/mcp-apple-music"
+
+[project.scripts]
+mcp-apple-music = "mcp_apple_music.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_apple_music"]
+
+[tool.ruff.lint]
+# Pinned to ruff 0.15's default selection, as across the fleet: adopting a new lint
+# family is a decision, not something a dependency bump should make for us.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.format]
+# Vendored verbatim from CDiT-infrastructure; re-copied, never reformatted here.
+exclude = ["src/mcp_apple_music/usage.py"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = ["live: talks to the real Apple Music API; runs only with TEST_LIVE=1"]
+addopts = "-m 'not live'"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "pytest-asyncio>=1.0",
+    "ruff>=0.15.14",
+]

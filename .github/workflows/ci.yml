@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # fastmcp 4: fail on any camelCase MCP field access instead of warning.
+      FASTMCP_MCP_CAMELCASE_COMPAT: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run pytest
+
+      # Scoped audit of the runtime lock (what the image ships). A bare `uvx pip-audit`
+      # audits its own tool env and always passes, so the input must be the export.
+      - name: Security audit (locked runtime deps)
+        run: |
+          uv export --frozen --no-dev --no-emit-project -o requirements-audit.txt
+          uvx pip-audit==2.9.0 --no-deps --disable-pip -r requirements-audit.txt
