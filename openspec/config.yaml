@@ -1,32 +1,12 @@
 schema: spec-driven
-
-# Project context (optional)
-# Add only constraints that should guide OpenSpec artifacts and workflows.
-# Include constraints an agent cannot infer by reading the code.
-# Keep general project documentation and discoverable codebase facts out.
-# Example:
-#   context: |
-#     Designs and tasks must cover Windows, macOS, and Linux
-#     Write all artifacts in Spanish
-
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always state what is out of scope
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
-
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+references:
+  - cdit
+context: |
+  FastMCP 4 server for Apple Music: catalog and library search, playlist
+  management, and config-defined mirrored playlists kept as a rolling
+  window of tracks from an external source (JSON feed, push webhook, or a
+  Spotify playlist read with its owner's login). Two Apple transports: the
+  documented Apple Music API first, the web-player API only for removal,
+  rename and delete. Fleet conventions from the cdit store apply.
+  Public repo: planning lives in the private cdit store; keep deployment
+  specifics and personal details out of this repo.
