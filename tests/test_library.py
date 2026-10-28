@@ -151,8 +151,19 @@ async def test_remove_2xx_but_present_is_a_failure(library, apple):
     assert (result.ok, result.reason, result.failed) == (False, NOT_REMOVED, ["i.A"])
 
 
-async def test_removal_that_took_every_copy_still_reports_the_playlist(library, apple):
-    """If `mode=all` removes all copies (the 2.5 spike decides), the caller sees it."""
+async def test_removing_two_copies_sends_two_removals(library, apple):
+    """Copies share one ID; each listed ID removes one copy, the topmost."""
+    apple.on("GET", TRACKS, 200, web_listing("i.A", "i.B", "i.A"))
+    apple.on("GET", TRACKS, 200, web_listing("i.B"))
+    apple.on("DELETE", TRACKS, 204)
+    result = await library.remove_tracks("p.1", ["i.A", "i.A"])
+    deletes = [r for r in apple.sent(TRACKS) if r.method == "DELETE"]
+    assert result.ok and len(deletes) == 2
+    assert {r.url.params["mode"] for r in deletes} == {"first"}
+
+
+async def test_over_removal_is_visible_in_the_read_back(library, apple):
+    """If Apple ever removed more than asked, the caller sees the playlist as it is."""
     apple.on("GET", TRACKS, 200, web_listing("i.A", "i.A", "i.B"))
     apple.on("GET", TRACKS, 200, web_listing("i.B"))
     apple.on("DELETE", TRACKS, 204)

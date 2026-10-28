@@ -65,12 +65,13 @@ class Library:
         )
 
     async def remove_tracks(self, playlist_id: str, track_ids: list[str]) -> Verified:
-        """Remove tracks by the IDs the web-player listing gives them."""
+        """Remove one copy, the topmost, per listed ID (as the web-player listing
+        gives them); list an ID twice to remove two copies."""
         read = functools.partial(self.web.playlist_tracks, playlist_id)
         before = Counter(map(track_id, (await read()).data))
         error: AppleError | None = None
         removed_any = False
-        for tid in dict.fromkeys(track_ids):
+        for tid in track_ids:
             try:
                 await self.web.remove_track(playlist_id, tid)
             except AppleError as e:

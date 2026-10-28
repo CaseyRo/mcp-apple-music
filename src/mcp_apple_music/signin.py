@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 
-# The page loads MusicKit from Apple's CDN; no-referrer keeps the link token in the
-# URL from travelling there, where it could be replayed to swap in another account.
+# Apple's authorization checks which site asks, so the origin must travel; the link
+# token must not (it could be replayed to swap in another account). The page also
+# drops the token from its own URL on load, before MusicKit can read location.
 HEADERS = {
     "Cache-Control": "no-store",
-    "Referrer-Policy": "no-referrer",
+    "Referrer-Policy": "origin",
     "X-Frame-Options": "DENY",
 }
 
@@ -44,6 +45,7 @@ It never touches playlists you made yourself.</p>
 const CONFIG = """
         + config
         + """;
+history.replaceState(null, "", location.pathname);
 const go = document.getElementById("go");
 const status = document.getElementById("status");
 document.addEventListener("musickitloaded", async () => {
