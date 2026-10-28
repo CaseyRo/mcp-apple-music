@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS tokens (
     obtained_at REAL NOT NULL,
     invalid INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS owned_playlists (
+    playlist_id TEXT PRIMARY KEY,
+    how TEXT NOT NULL,
+    since REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sign_in_links (
     hash TEXT PRIMARY KEY,
     service TEXT NOT NULL,
@@ -79,6 +84,35 @@ class Store:
 
     def mark_token_invalid(self, name: str) -> None:
         self._db.execute("UPDATE tokens SET invalid = 1 WHERE name = ?", (name,))
+
+    # -- playlists this server may edit (design D12) --------------------------
+    # Apple marks nearly every user playlist editable, so its flag can't be the
+    # gate: a playlist is ours when we created it or a mirror adopted it by ID.
+
+    def own(self, playlist_id: str, how: str) -> None:
+        self._db.execute(
+            "INSERT OR IGNORE INTO owned_playlists (playlist_id, how, since)"
+            " VALUES (?, ?, ?)",
+            (playlist_id, how, self._clock()),
+        )
+
+    def disown(self, playlist_id: str) -> None:
+        self._db.execute(
+            "DELETE FROM owned_playlists WHERE playlist_id = ?", (playlist_id,)
+        )
+
+    def owns(self, playlist_id: str) -> bool:
+        return (
+            self._db.execute(
+                "SELECT 1 FROM owned_playlists WHERE playlist_id = ?", (playlist_id,)
+            ).fetchone()
+            is not None
+        )
+
+    def owned(self) -> set[str]:
+        return {
+            r[0] for r in self._db.execute("SELECT playlist_id FROM owned_playlists")
+        }
 
     # -- single-use sign-in links -------------------------------------------
     # A link is opened once (GET serves the page) and then completed once (the

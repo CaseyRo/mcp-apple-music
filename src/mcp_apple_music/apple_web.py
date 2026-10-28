@@ -123,6 +123,14 @@ class AppleWebPlayer(RailClient):
 
     # -- reads ---------------------------------------------------------------
 
+    async def library_playlists(self) -> Read:
+        """Library playlists with `trackCount`, which the documented API refuses."""
+        return self.throttle.label(
+            await self._pages(
+                "/v1/me/library/playlists", limit=100, extend="trackCount"
+            )
+        )
+
     async def playlist_tracks(self, playlist_id: str) -> Read:
         """Tracks in playlist order; each ``id`` is what `remove_track` takes.
         Every copy of a song carries the same ID."""

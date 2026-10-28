@@ -13,7 +13,18 @@ from fastmcp import Client
 import mcp_apple_music.server as srv
 
 # Grows as tools land; every tool the server ships must be listed here.
-EXPECTED_TOOLS: set[str] = set()
+EXPECTED_TOOLS: set[str] = {
+    "search",
+    "lookup_isrc",
+    "list_playlists",
+    "get_playlist",
+    "create_playlist",
+    "rename_playlist",
+    "delete_playlist",
+    "add_tracks",
+    "remove_tracks",
+    "sign_in_link",
+}
 
 
 async def test_server_registers_its_tools():
@@ -32,3 +43,12 @@ async def test_health_answers():
     body = resp.json()
     assert body["service"] == "mcp-apple-music"
     assert body["status"] == "healthy"
+
+
+async def test_write_tools_carry_annotations():
+    async with Client(srv.mcp) as client:
+        tools = {t.name: t.annotations for t in await client.list_tools()}
+    for name in ("delete_playlist", "remove_tracks"):
+        assert tools[name].destructive_hint is True, name
+    for name in ("search", "lookup_isrc", "list_playlists", "get_playlist"):
+        assert tools[name].read_only_hint is True, name

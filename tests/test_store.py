@@ -77,3 +77,13 @@ def test_second_process_sees_writes(store, tmp_path, clock):
     raw = other.issue_link("apple")
     other.close()
     assert store.open_link("apple", raw)
+
+
+def test_ownership_registry(store):
+    assert not store.owns("p.1") and store.owned() == set()
+    store.own("p.1", "created")
+    store.own("p.1", "adopted")  # first record wins; no duplicate
+    store.own("p.2", "adopted")
+    assert store.owns("p.1") and store.owned() == {"p.1", "p.2"}
+    store.disown("p.1")
+    assert not store.owns("p.1") and store.owned() == {"p.2"}

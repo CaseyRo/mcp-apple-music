@@ -31,6 +31,7 @@ class Verified:
     reason: str | None = None
     failed: list[str] = field(default_factory=list)  # ids whose write didn't take
     tracks: list[dict] | None = None  # the playlist as read back; None if unreadable
+    stopped: str | None = None  # a removal loop broke off here; earlier ones went
 
 
 def catalog_id(track: dict) -> str | None:
@@ -83,8 +84,8 @@ class Library:
         result = await self._settle(
             self.web.rail, read, track_id, before, Counter(track_ids), -1, NOT_REMOVED
         )
-        if error and result.ok is False:
-            result.reason = f"{result.reason}; stopped at: {error}"
+        if error:
+            result.stopped = str(error)
         return result
 
     async def _settle(
