@@ -195,7 +195,9 @@ async def test_writes_send_the_web_player_calls(web, apple, clock):
 
     assert {(w.rail, w.status) for w in (removed, renamed, deleted)} == {("web", 204)}
     params = apple.sent(TRACKS)[0].url.params
-    assert (params["ids[library-songs]"], params["mode"]) == ("i.A", "all")
+    assert (params["ids[library-songs]"], params["mode"]) == ("i.A", "first")
+    await web.remove_track("p.1", "i.A", every_copy=True)
+    assert apple.sent(TRACKS)[-1].url.params["mode"] == "all"
     patch = next(r for r in apple.requests if r.method == "PATCH")
     assert json.loads(patch.content) == {"attributes": {"name": "ROCK 24"}}
 

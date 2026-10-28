@@ -1,9 +1,9 @@
 """End-to-end check of both rails on a scratch playlist.
 
 The opt-in live tests and the daily canary run this same routine: create a
-playlist, append one song twice, remove one copy, delete the playlist. It records
-how many copies the removal left, which is how the server learns whether Apple's
-removal takes out one occurrence or all of them.
+playlist, append one song twice, remove one copy, delete the playlist. Removing one
+of two copies must leave one: the rolling window depends on amp-api's ``mode=first``
+taking exactly the topmost copy (design D6), so a change there turns the canary red.
 """
 
 from __future__ import annotations
@@ -60,6 +60,10 @@ async def run(library: Library) -> CanaryResult:
             log(f"copies left: {result.copies_left} of 2")
         if not removed.ok:
             raise RuntimeError(f"remove: {removed.reason}")
+        if result.copies_left != 1:
+            raise RuntimeError(
+                f"remove: expected 1 of 2 copies left, found {result.copies_left}"
+            )
         result.ok = True
     except (AppleError, RuntimeError) as e:
         result.error = str(e)

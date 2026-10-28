@@ -77,12 +77,14 @@ async def test_pass_records_copies_left(library, apple):
     assert result.steps[-1] == "deleted p.c (web)"
 
 
-async def test_removal_of_all_copies_is_recorded_not_failed(library, apple):
-    """Shared IDs and mode=all would take both copies: the canary still passes."""
+async def test_removal_of_every_copy_fails_the_canary(library, apple):
+    """The window relies on mode=first taking one copy (D6); taking both is a break."""
     shared = [copy(1), copy(1)]
     apple.routes[("GET", TRACKS)] = tracks(None, shared, shared, shared, None)
     result = await canary.run(library)
-    assert result.ok and result.copies_left == 0
+    assert not result.ok and result.copies_left == 0
+    assert result.error == "remove: expected 1 of 2 copies left, found 0"
+    assert result.steps[-1] == "deleted p.c (web)"
 
 
 async def test_failed_append_still_cleans_up(library, apple):

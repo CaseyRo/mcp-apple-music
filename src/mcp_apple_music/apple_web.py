@@ -124,7 +124,8 @@ class AppleWebPlayer(RailClient):
     # -- reads ---------------------------------------------------------------
 
     async def playlist_tracks(self, playlist_id: str) -> Read:
-        """Tracks in playlist order; each ``id`` is what `remove_track` takes."""
+        """Tracks in playlist order; each ``id`` is what `remove_track` takes.
+        Every copy of a song carries the same ID."""
         return self.throttle.label(
             await self._pages(
                 f"/v1/me/library/playlists/{playlist_id}/tracks", limit=100
@@ -133,12 +134,22 @@ class AppleWebPlayer(RailClient):
 
     # -- writes --------------------------------------------------------------
 
-    async def remove_track(self, playlist_id: str, track_id: str) -> Write:
+    async def remove_track(
+        self, playlist_id: str, track_id: str, every_copy: bool = False
+    ) -> Write:
+        """Remove the topmost copy of a track, or every copy.
+
+        All copies of a song share one ID, so ``mode`` picks which go: ``first`` is
+        exactly the topmost one (verified live 2026-10-28, ``[A, B, A]`` -> ``[B, A]``).
+        """
         resp = await self._request(
             "DELETE",
             f"/v1/me/library/playlists/{playlist_id}/tracks",
             user=True,
-            params={"ids[library-songs]": track_id, "mode": "all"},
+            params={
+                "ids[library-songs]": track_id,
+                "mode": "all" if every_copy else "first",
+            },
         )
         return Write(self.rail, resp.status_code)
 

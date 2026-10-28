@@ -71,7 +71,7 @@ async def test_page_serves_musickit_once(http, configured):
     assert page.status_code == 200
     assert "musickit/v3/musickit.js" in page.text
     assert f'"link": "{link}"' in page.text and '"dev": "ey' in page.text
-    assert page.headers["Referrer-Policy"] == "no-referrer"
+    assert page.headers["Referrer-Policy"] == "origin"
     assert page.headers["Cache-Control"] == "no-store"
 
     again = await http.get("/auth/apple", params={"t": link})
