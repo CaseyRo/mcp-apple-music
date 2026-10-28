@@ -184,8 +184,5 @@ async def test_partial_removal_reports_what_happened(library, apple):
     apple.on("DELETE", TRACKS, 204)
     apple.on("DELETE", TRACKS, 500, {"errors": [{"detail": "Upstream error"}]})
     result = await library.remove_tracks("p.1", ["i.A", "i.B"])
-    assert not result.ok and result.failed == ["i.B"]
-    assert (
-        result.reason
-        == f"{NOT_REMOVED}; stopped at: web rail: HTTP 500: Upstream error"
-    )
+    assert not result.ok and result.failed == ["i.B"] and result.reason == NOT_REMOVED
+    assert result.stopped == "web rail: HTTP 500: Upstream error"
