@@ -2,7 +2,7 @@ name: Release
 
 # Every push to main that changes code becomes a release: a new patch tag and a
 # public multi-arch image for self-hosters. Nothing is committed to main (it's
-# protected), and nothing here deploys: the CDIT stack builds from source on the
+# protected), and nothing here deploys: a build-from-source stack redeploys on the
 # repo's push webhook.
 on:
   push:
