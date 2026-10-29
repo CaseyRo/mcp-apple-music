@@ -4,7 +4,7 @@ MCP server for Apple Music: search the catalog and your library, manage playlist
 "mirrored" playlists in sync with an external source (a JSON feed, a webhook, or a Spotify
 playlist) as a rolling window.
 
-Work in progress.
+Run your own with Docker: [SELF-HOSTING.md](SELF-HOSTING.md).
 
 ## Two rails
 
@@ -50,7 +50,7 @@ source, for example a radio station's last 24 hours. Mirrors are defined in a YA
 [`docs/examples/five-stations.yaml`](docs/examples/five-stations.yaml)):
 
 ```sh
-MIRRORS_FILE=/data/mirrors.yaml
+MIRRORS_FILE=/config/mirrors.yaml   # or MIRRORS_CONFIG=<the same YAML on one line>
 MIRRORS_ENABLED=true           # off by default: adopting writes to playlists people follow
 WEBHOOK_SECRET=<random>        # enables POST /hooks/<secret>
 SPOTIFY_CLIENT_ID=…            # optional: ISRC matching through a Spotify app

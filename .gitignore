@@ -8,3 +8,6 @@ __pycache__/
 data/
 *.p8
 requirements-audit.txt
+
+# compose.yaml mounts ./config for mirrors.yaml
+/config/

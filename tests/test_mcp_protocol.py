@@ -44,7 +44,8 @@ async def test_health_answers():
     assert resp.status_code == 200
     body = resp.json()
     assert body["service"] == "mcp-apple-music"
-    assert body["status"] == "healthy"
+    assert body["status"] == "degraded"  # nothing configured in tests
+    assert "MusicKit key missing" in body["problems"]
 
 
 async def test_write_tools_carry_annotations():

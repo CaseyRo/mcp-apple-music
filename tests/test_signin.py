@@ -93,7 +93,7 @@ async def test_sign_in_stores_token_and_health_shows_it(http, configured, apple)
     assert apple.sent("/v1/me/storefront")[0].headers["Music-User-Token"] == "MUT-NEW"
 
     creds = await health(http)
-    assert creds["musickit_key"] == "configured"
+    assert creds["developer_token"]["state"] == "valid"
     assert creds["apple_user_token"]["state"] == "valid"
     assert creds["apple_user_token"]["obtained_at"]
     assert "MUT-NEW" not in json.dumps(creds)

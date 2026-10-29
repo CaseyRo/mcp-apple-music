@@ -31,10 +31,18 @@ class Settings(BaseSettings):
     apple_private_key: SecretStr = SecretStr("")
     apple_token_ttl_seconds: int = 7 * 86_400
     apple_token_renew_before_seconds: int = 86_400
+    # Apple doesn't document the Music User Token's lifetime (reports: days to ~6
+    # months); /health warns from this age, a month before the longest reports.
+    apple_user_token_warn_days: int = 150
+    # Daily end-to-end check of both rails on a scratch playlist; 0 turns it off.
+    canary_interval_seconds: int = 86_400
 
     # Mirrors (see mirrors.example.yaml). Off by default: adopting writes to
     # playlists people may follow, so turning the loop on is a deliberate step.
     mirrors_file: Path | None = None
+    # The same YAML inline (flow style fits one line), for hosts that hold
+    # config in environment variables. MIRRORS_FILE wins when both are set.
+    mirrors_config: str = ""
     mirrors_enabled: bool = False
     # Received music per hour of wall time below this flags possibly missed tracks.
     mirror_coverage_threshold: float = 0.9

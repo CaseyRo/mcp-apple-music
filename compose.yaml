@@ -1,0 +1,21 @@
+# Self-hosting: the published image, reachable only from this machine.
+# Copy .env.example to .env and fill it in; see SELF-HOSTING.md.
+services:
+  mcp-apple-music:
+    image: ghcr.io/caseyro/mcp-apple-music:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file: .env
+    volumes:
+      - apple-music-data:/data      # tokens, mirror windows, playlist IDs
+      - ./config:/config:ro         # put mirrors.yaml here (MIRRORS_FILE=/config/mirrors.yaml)
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  apple-music-data:

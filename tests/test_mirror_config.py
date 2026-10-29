@@ -61,3 +61,21 @@ def test_example_files_are_valid():
     root = Path(__file__).parent.parent
     for path in [root / "mirrors.example.yaml", *root.glob("docs/examples/*.yaml")]:
         assert mirror_config.load(path), path
+
+
+def test_inline_config_on_one_line(monkeypatch, tmp_path):
+    """MIRRORS_CONFIG carries the same YAML in flow style; a file wins over it."""
+    import mcp_apple_music.server as srv
+    from mcp_apple_music.config import settings
+
+    line = "{mirrors: [{name: rock, playlist_name: Rock, source: {type: webhook}}]}"
+    monkeypatch.setattr(settings, "mirrors_config", line)
+    assert [m.name for m in srv.mirrors()] == ["rock"]
+    (tmp_path / "m.yaml").write_text(
+        "mirrors: [{name: soul, playlist_name: S, source: {type: webhook}}]"
+    )
+    monkeypatch.setattr(settings, "mirrors_file", tmp_path / "m.yaml")
+    srv.mirrors.cache_clear()
+    assert [m.name for m in srv.mirrors()] == ["soul"]
+    with pytest.raises(ConfigError, match="MIRRORS_CONFIG"):
+        mirror_config.loads("{mirrors: [")
