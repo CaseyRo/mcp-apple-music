@@ -87,3 +87,32 @@ def test_ownership_registry(store):
     assert store.owns("p.1") and store.owned() == {"p.1", "p.2"}
     store.disown("p.1")
     assert not store.owns("p.1") and store.owned() == {"p.2"}
+
+
+def test_schema_version_set_and_reopen_is_a_no_op(tmp_path, clock):
+    path = tmp_path / "state.db"
+    s = Store(path, clock=clock)
+    s.set_token(APPLE_USER_TOKEN, "MUT")
+    s.close()
+    again = Store(path, clock=clock)  # the migration is idempotent and keeps data
+    assert again.valid_token(APPLE_USER_TOKEN) == "MUT"
+    again.close()
+    assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_newer_schema_refused(tmp_path, clock):
+    path = tmp_path / "state.db"
+    sqlite3.connect(path).execute("PRAGMA user_version = 99")
+    with pytest.raises(RuntimeError, match="schema 99, newer"):
+        Store(path, clock=clock)
+
+
+def test_two_writers_share_the_file(tmp_path, clock):
+    """The webhook handler and the loop each hold a connection in WAL mode."""
+    path = tmp_path / "state.db"
+    a, b = Store(path, clock=clock), Store(path, clock=clock)
+    a.add_arrival("rock", "spotify:1", 200_000, "webhook")
+    b.add_arrival("rock", "spotify:2", 200_000, "feed")
+    assert [r["key"] for r in a.arrivals("rock", 0)] == ["spotify:1", "spotify:2"]
+    a.close()
+    b.close()

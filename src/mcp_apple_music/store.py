@@ -16,6 +16,7 @@ from pathlib import Path
 
 APPLE_USER_TOKEN = "apple_music_user"
 LINK_TTL_SECONDS = 15 * 60
+SCHEMA_VERSION = 2  # 1: tokens, owned playlists, links; 2: mirror tables
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tokens (
@@ -36,7 +37,79 @@ CREATE TABLE IF NOT EXISTS sign_in_links (
     opened_at REAL,
     used_at REAL
 );
+CREATE TABLE IF NOT EXISTS mirrors (
+    name TEXT PRIMARY KEY,
+    playlist_id TEXT,
+    created_at REAL NOT NULL,
+    last_sync REAL,
+    last_error TEXT,
+    last_error_at REAL
+);
+-- One row per occurrence (design D5), in seq order. Rows that left the window
+-- stay, marked expired, until their copy is gone from the playlist.
+CREATE TABLE IF NOT EXISTS window_entries (
+    mirror TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    key TEXT,
+    spotify_id TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    artists TEXT NOT NULL DEFAULT '',
+    album TEXT,
+    duration_ms INTEGER,
+    arrived_at REAL NOT NULL,
+    apple_song_id TEXT,
+    match_method TEXT,
+    unavailable_reason TEXT,
+    isrc TEXT,
+    placed INTEGER NOT NULL DEFAULT 0,
+    expired INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (mirror, seq)
+);
+CREATE TABLE IF NOT EXISTS arrivals (
+    mirror TEXT NOT NULL,
+    key TEXT NOT NULL,
+    at REAL NOT NULL,
+    duration_ms INTEGER,
+    source TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS arrivals_by_mirror ON arrivals (mirror, at);
+CREATE TABLE IF NOT EXISTS repairs (
+    mirror TEXT NOT NULL,
+    at REAL NOT NULL,
+    action TEXT NOT NULL,
+    detail TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feed_cursor (
+    mirror TEXT PRIMARY KEY,
+    ids TEXT NOT NULL,
+    at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS matches (
+    key TEXT PRIMARY KEY,
+    apple_song_id TEXT,
+    method TEXT,
+    isrc TEXT,
+    duration_ms INTEGER,
+    reason TEXT,
+    at REAL NOT NULL
+);
 """
+
+ENTRY_FIELDS = (
+    "key",
+    "spotify_id",
+    "title",
+    "artists",
+    "album",
+    "duration_ms",
+    "arrived_at",
+    "apple_song_id",
+    "match_method",
+    "unavailable_reason",
+    "isrc",
+    "placed",
+    "expired",
+)
 
 
 @dataclass
@@ -57,7 +130,17 @@ class Store:
         self._db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA busy_timeout=5000")
-        self._db.executescript(_SCHEMA)
+        self._db.row_factory = sqlite3.Row
+        found = self._db.execute("PRAGMA user_version").fetchone()[0]
+        if found > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"{path} has schema {found}, newer than this server's {SCHEMA_VERSION}:"
+                " run a newer mcp-apple-music, or restore a backup of the data dir."
+            )
+        self._db.executescript(
+            _SCHEMA
+        )  # every table is IF NOT EXISTS: adds, never alters
+        self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._clock = clock
 
     def close(self) -> None:
@@ -142,3 +225,121 @@ class Store:
             (now, _hash(raw), service, now - LINK_TTL_SECONDS),
         )
         return cur.rowcount == 1
+
+    # -- mirrors (design D4, D5) -----------------------------------------------
+
+    def mirror(self, name: str) -> sqlite3.Row | None:
+        return self._db.execute(
+            "SELECT * FROM mirrors WHERE name = ?", (name,)
+        ).fetchone()
+
+    def bind_mirror(self, name: str, playlist_id: str) -> None:
+        """Point a mirror at a playlist. Switching playlists empties the window."""
+        row = self.mirror(name)
+        if row and row["playlist_id"] == playlist_id:
+            return
+        if row and row["playlist_id"]:
+            self._db.execute("DELETE FROM window_entries WHERE mirror = ?", (name,))
+        self._db.execute(
+            "INSERT INTO mirrors (name, playlist_id, created_at) VALUES (?, ?, ?)"
+            " ON CONFLICT (name) DO UPDATE SET playlist_id = excluded.playlist_id",
+            (name, playlist_id, self._clock()),
+        )
+
+    def record_sync(self, name: str, error: str | None = None) -> None:
+        """A sync's outcome; kept even for a mirror whose playlist isn't set up yet."""
+        now = self._clock()
+        self._db.execute(
+            "INSERT INTO mirrors (name, created_at) VALUES (?, ?)"
+            " ON CONFLICT (name) DO NOTHING",
+            (name, now),
+        )
+        if error:
+            self._db.execute(
+                "UPDATE mirrors SET last_error = ?, last_error_at = ? WHERE name = ?",
+                (error, now, name),
+            )
+        else:
+            self._db.execute(
+                "UPDATE mirrors SET last_sync = ? WHERE name = ?", (now, name)
+            )
+
+    def arrived_within(self, mirror: str, key: str, seconds: float) -> bool:
+        return (
+            self._db.execute(
+                "SELECT 1 FROM arrivals WHERE mirror = ? AND key = ? AND at > ?",
+                (mirror, key, self._clock() - seconds),
+            ).fetchone()
+            is not None
+        )
+
+    def add_arrival(
+        self, mirror: str, key: str, duration_ms: int | None, source: str
+    ) -> None:
+        now = self._clock()
+        self._db.execute(
+            "INSERT INTO arrivals (mirror, key, at, duration_ms, source)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (mirror, key, now, duration_ms, source),
+        )
+        # Two days covers the dedupe horizon and the 24 h coverage figure.
+        self._db.execute("DELETE FROM arrivals WHERE at < ?", (now - 2 * 86_400,))
+
+    def arrivals(self, mirror: str, since: float) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM arrivals WHERE mirror = ? AND at > ? ORDER BY at",
+            (mirror, since),
+        ).fetchall()
+
+    def add_entries(
+        self, mirror: str, rows: list[dict], *, before: bool = False
+    ) -> None:
+        """Append window entries, or with ``before`` put them ahead of all existing
+        ones (an adopted playlist's tracks are older than anything that arrived)."""
+        lo, hi = self._db.execute(
+            "SELECT COALESCE(MIN(seq), 1), COALESCE(MAX(seq), 0)"
+            " FROM window_entries WHERE mirror = ?",
+            (mirror,),
+        ).fetchone()
+        start = lo - len(rows) if before else hi + 1
+        now = self._clock()
+        for seq, row in enumerate(rows, start):
+            row = {"arrived_at": now, **row}
+            cols = ", ".join(row)
+            self._db.execute(
+                f"INSERT INTO window_entries (mirror, seq, {cols})"
+                f" VALUES (?, ?, {', '.join('?' * len(row))})",
+                (mirror, seq, *row.values()),
+            )
+
+    def entries(self, mirror: str) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM window_entries WHERE mirror = ? ORDER BY seq", (mirror,)
+        ).fetchall()
+
+    def update_entry(self, mirror: str, seq: int, **fields) -> None:
+        assert fields and set(fields) <= set(ENTRY_FIELDS), fields
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        self._db.execute(
+            f"UPDATE window_entries SET {sets} WHERE mirror = ? AND seq = ?",
+            (*fields.values(), mirror, seq),
+        )
+
+    def delete_entries(self, mirror: str, seqs: list[int]) -> None:
+        self._db.executemany(
+            "DELETE FROM window_entries WHERE mirror = ? AND seq = ?",
+            [(mirror, s) for s in seqs],
+        )
+
+    def add_repair(self, mirror: str, action: str, detail: str) -> None:
+        self._db.execute(
+            "INSERT INTO repairs (mirror, at, action, detail) VALUES (?, ?, ?, ?)",
+            (mirror, self._clock(), action, detail),
+        )
+
+    def repairs(self, mirror: str, limit: int = 20) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM repairs WHERE mirror = ? ORDER BY at DESC, rowid DESC"
+            " LIMIT ?",
+            (mirror, limit),
+        ).fetchall()

@@ -1,0 +1,23 @@
+# Mirrors: each keeps one Apple Music playlist equal to the last `window_seconds`
+# of music from its source. Point MIRRORS_FILE at a copy of this file.
+mirrors:
+  - name: rock
+    playlist_name: "My Station: Rock"
+    # playlist_id: p.AbCdEf123   # adopt an existing playlist by ID instead of creating one
+    window_seconds: 86400         # 24 hours of music
+    source:
+      type: feed                  # polled JSON: one track object, or a list of them
+      url: https://example.com/now-playing/rock.json
+      interval_seconds: 20
+
+  - name: jazz
+    playlist_name: "My Station: Jazz"
+    webhook_key: jazz             # pushes to POST /hooks/<secret> with "playlist": "jazz"
+    source:
+      type: webhook
+
+  - name: favourites
+    playlist_name: "Favourites (from Spotify)"
+    source:
+      type: spotify               # needs the playlist owner's Spotify sign-in
+      playlist_id: 37i9dQZF1DXcBWIGoYBM5M
