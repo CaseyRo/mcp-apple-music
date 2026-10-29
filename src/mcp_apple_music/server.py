@@ -614,6 +614,8 @@ class PlaylistChange(BaseModel):
     removed: list[TrackChange] = []
     track_count_after: int | None = None
     previous_name: str | None = None
+    description: str | None = None
+    previous_description: str | None = None
     unmatched_isrcs: list[str] = []
     invalid_isrcs: list[str] = []
 
@@ -632,8 +634,12 @@ def _playlist_info(resource: dict) -> PlaylistInfo:
         editable=store().owns(resource["id"]),
         apple_curated=playlist_kind(resource) == "apple",
         track_count=a.get("trackCount"),
-        description=(a.get("description") or {}).get("standard"),
+        description=_description(resource),
     )
+
+
+def _description(resource: dict) -> str | None:
+    return (resource.get("attributes", {}).get("description") or {}).get("standard")
 
 
 def _change(position: int, song: m.Song) -> TrackChange:
@@ -987,6 +993,49 @@ async def rename_playlist(playlist_id: str, name: str) -> PlaylistChange:
         previous_name=previous,
         rail=write.rail,
         confirmation="apple_accepted",
+    )
+
+
+@mcp.tool(
+    tags=_TAGS,
+    annotations=ToolAnnotations(
+        title="Set a playlist's description",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
+)
+async def set_playlist_description(
+    playlist_id: str, description: Annotated[str, Field(max_length=2000)]
+) -> PlaylistChange:
+    """[apple-music] Replace the description (the text under the title) of a
+    playlist this server created or a mirror adopted. Line breaks and bullets
+    are kept. The previous description is returned so it can be restored."""
+    _owned(playlist_id)
+    with _apple_errors():
+        api = apple_api()
+        previous = _description(await api.library_playlist(playlist_id))
+        write = await apple_web().set_playlist_description(playlist_id, description)
+        now = previous
+        for delay in (0.0, 1.0, 2.0, 4.0):  # Apple's reads can lag its writes
+            await asyncio.sleep(delay)
+            now = _description(await api.library_playlist(playlist_id))
+            if (now or "").strip() == description.strip():
+                break
+    confirmed = (now or "").strip() == description.strip()
+    return PlaylistChange(
+        summary=f"Description of {playlist_id} "
+        + (
+            "replaced; re-read and confirmed."
+            if confirmed
+            else "sent; Apple accepted it, but the re-read doesn't show it yet."
+        ),
+        playlist_id=playlist_id,
+        rail=write.rail,
+        confirmation="read_back" if confirmed else "apple_accepted",
+        description=now,
+        previous_description=previous,
     )
 
 

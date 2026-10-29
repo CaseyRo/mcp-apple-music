@@ -20,6 +20,7 @@ EXPECTED_TOOLS: set[str] = {
     "get_playlist",
     "create_playlist",
     "rename_playlist",
+    "set_playlist_description",
     "delete_playlist",
     "add_tracks",
     "remove_tracks",
