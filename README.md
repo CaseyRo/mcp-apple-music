@@ -4,7 +4,9 @@ MCP server for Apple Music: search the catalog and your library, manage playlist
 "mirrored" playlists in sync with an external source (a JSON feed, a webhook, or a Spotify
 playlist) as a rolling window.
 
-Run your own with Docker: [SELF-HOSTING.md](SELF-HOSTING.md).
+Run your own with Docker: [SELF-HOSTING.md](SELF-HOSTING.md). `compose.yaml` runs the
+published image on `127.0.0.1`; `compose.build.yaml` builds from source for a server behind
+a tunnel, bound to a private address.
 
 ## Two rails
 

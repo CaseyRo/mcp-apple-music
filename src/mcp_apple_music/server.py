@@ -93,13 +93,20 @@ async def run_canary() -> None:
     event("canary", "", ok=result.ok, error=result.error)
 
 
+async def _canary_once() -> None:
+    try:
+        await run_canary()
+    except Exception as e:  # noqa: BLE001 - a canary bug must not stop the server
+        event("canary_error", "", error=repr(e))
+
+
 async def _canary_loop() -> None:
     while True:
-        try:
-            await run_canary()
-        except Exception as e:  # noqa: BLE001 - a canary bug must not stop the server
-            event("canary_error", "", error=repr(e))
+        await _canary_once()
         await asyncio.sleep(settings.canary_interval_seconds)
+
+
+_after_sign_in: set[asyncio.Task] = set()  # keeps the task alive until it ends
 
 
 @lifespan
@@ -402,6 +409,12 @@ async def apple_sign_in_complete(request: Request) -> JSONResponse:
         )
     except AppleError as e:
         return answer(502, f"Signed in, but Apple could not confirm it yet: {e}")
+    if (
+        settings.canary_interval_seconds > 0
+    ):  # check both rails now, not at the next run
+        task = asyncio.create_task(_canary_once())
+        _after_sign_in.add(task)
+        task.add_done_callback(_after_sign_in.discard)
     return answer(200, f"Signed in (storefront {storefront}). You can close this page.")
 
 

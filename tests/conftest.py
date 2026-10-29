@@ -29,6 +29,7 @@ def isolated_state(request, tmp_path, monkeypatch):
 
     if request.node.get_closest_marker("live") is None:
         monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "canary_interval_seconds", 0)  # tests opt in
     cached = (
         srv.store,
         srv.developer_token,

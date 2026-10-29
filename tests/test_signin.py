@@ -169,3 +169,20 @@ def test_cli_default_url_and_usage(capsys):
     )
     with pytest.raises(SystemExit):
         srv.main(["sign-in-link", "spotify"])
+
+
+async def test_sign_in_runs_the_canary_at_once(http, configured, monkeypatch):
+    """So /health reports both rails right after sign-in, not a day later."""
+    import asyncio
+
+    ran = asyncio.Event()
+
+    async def fake_canary() -> None:
+        ran.set()
+
+    monkeypatch.setattr(settings, "canary_interval_seconds", 86_400)
+    monkeypatch.setattr(srv, "run_canary", fake_canary)
+    link = srv.store().issue_link("apple")
+    await http.get("/auth/apple", params={"t": link})
+    assert (await sign_in(http, link)).status_code == 200
+    await asyncio.wait_for(ran.wait(), timeout=2)
