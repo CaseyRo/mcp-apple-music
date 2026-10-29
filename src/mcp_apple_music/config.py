@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     mirrors_enabled: bool = False
     # POST /hooks/<secret> exists only when this is set.
     webhook_secret: SecretStr = SecretStr("")
+    # A Spotify app (client credentials) gives each track's ISRC; without it,
+    # mirrors match on title and artists only.
+    spotify_client_id: str = ""
+    spotify_client_secret: SecretStr = SecretStr("")
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 
