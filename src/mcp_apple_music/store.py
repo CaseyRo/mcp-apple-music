@@ -86,6 +86,12 @@ CREATE TABLE IF NOT EXISTS feed_cursor (
     ids TEXT NOT NULL,
     at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS checks (
+    name TEXT PRIMARY KEY,
+    ok INTEGER NOT NULL,
+    at REAL NOT NULL,
+    detail TEXT
+);
 CREATE TABLE IF NOT EXISTS matches (
     key TEXT PRIMARY KEY,
     apple_song_id TEXT,
@@ -353,6 +359,19 @@ class Store:
             " LIMIT ?",
             (mirror, limit),
         ).fetchall()
+
+    # -- periodic checks (the canary) -------------------------------------------
+
+    def set_check(self, name: str, ok: bool, detail: str | None = None) -> None:
+        self._db.execute(
+            "INSERT OR REPLACE INTO checks (name, ok, at, detail) VALUES (?, ?, ?, ?)",
+            (name, int(ok), self._clock(), detail),
+        )
+
+    def check(self, name: str) -> sqlite3.Row | None:
+        return self._db.execute(
+            "SELECT * FROM checks WHERE name = ?", (name,)
+        ).fetchone()
 
     # -- match cache and feed cursors -------------------------------------------
 

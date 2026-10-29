@@ -88,6 +88,13 @@ def parse(data: object) -> list[Mirror]:
     return mirrors
 
 
+def loads(text: str) -> list[Mirror]:
+    try:
+        return parse(yaml.safe_load(text))
+    except yaml.YAMLError as e:
+        raise ConfigError(f"MIRRORS_CONFIG: {e}") from None
+
+
 def load(path: Path) -> list[Mirror]:
     try:
         return parse(yaml.safe_load(path.read_text()))

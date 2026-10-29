@@ -78,6 +78,7 @@ class AppleWebPlayer(RailClient):
         self._clock = clock
         self._token: str | None = None
         self._token_exp = 0.0
+        self.last_error: str | None = None  # the last failed harvest, for /health
 
     async def _harvest(self) -> str:
         page = await self._http.get(BROWSE_URL, headers=_UA, follow_redirects=True)
@@ -99,6 +100,7 @@ class AppleWebPlayer(RailClient):
             token = await self._harvest()
             claims = jwt.decode(token, options={"verify_signature": False})
         except (httpx.HTTPError, ValueError, jwt.PyJWTError) as e:
+            self.last_error = str(e)
             # A failed refresh keeps the current token while it is still valid.
             if self._token and now < self._token_exp:
                 return self._token
@@ -107,7 +109,16 @@ class AppleWebPlayer(RailClient):
             ) from e
         self._token = token
         self._token_exp = float(claims.get("exp", now + 86_400))
+        self.last_error = None
         return token
+
+    def token_state(self) -> dict:
+        """For /health: never the token, only whether one is held and until when."""
+        if self._token and self._clock() < self._token_exp:
+            return {"state": "valid", "expires_at": self._token_exp}
+        if self.last_error:
+            return {"state": "invalid", "error": self.last_error}
+        return {"state": "not fetched yet"}  # harvested on the first web-rail call
 
     async def _auth(self, user: bool) -> dict[str, str]:
         mut = self._music_user_token()  # every amp-api call is user-scoped

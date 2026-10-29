@@ -1,0 +1,33 @@
+# Built from source on deploy (a Komodo stack's push webhook redeploys it), for a
+# server behind a tunnel. Settings come from the stack environment.
+services:
+  mcp-apple-music:
+    build: .
+    pull_policy: build
+    restart: unless-stopped
+    init: true
+    ports:
+      # Bind the host's private (tailnet) IP, never 0.0.0.0: Docker publishes
+      # 0.0.0.0 past the host firewall. Unset = compose refuses to render.
+      - "${BIND_IP:?set BIND_IP (the host's private IP) in the stack environment}:8014:8000"
+    environment:
+      - MCP_API_KEY=${MCP_API_KEY:?set MCP_API_KEY}
+      - PUBLIC_URL=${PUBLIC_URL:-}
+      - APPLE_TEAM_ID=${APPLE_TEAM_ID:-}
+      - APPLE_KEY_ID=${APPLE_KEY_ID:-}
+      - APPLE_PRIVATE_KEY=${APPLE_PRIVATE_KEY:-}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - MIRRORS_ENABLED=${MIRRORS_ENABLED:-false}
+      - MIRRORS_CONFIG=${MIRRORS_CONFIG:-}
+    volumes:
+      - apple-music-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  apple-music-data:

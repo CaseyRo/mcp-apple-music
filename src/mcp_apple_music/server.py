@@ -19,9 +19,11 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.lifespan import lifespan
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
+from starlette.middleware import Middleware as StarletteMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
+from . import canary
 from . import models as m
 from . import signin
 from .apple_api import AppleMusicAPI
@@ -34,6 +36,7 @@ from .matching import Matcher
 from .mirror import Engine, coverage, event
 from .mirror_config import ConfigError, Mirror
 from .mirror_config import load as load_mirrors
+from .mirror_config import loads as load_mirrors_inline
 from .rails import (
     AppleError,
     RailUnavailable,
@@ -77,26 +80,50 @@ Apple Music: search the catalog and the owner's library, and manage playlists.
 """
 
 
+CANARY = "canary"
+
+
+async def run_canary() -> None:
+    """One canary run, recorded for /health. Skipped (not failed) while nobody is
+    signed in, since a missing sign-in is reported on its own."""
+    if not developer_token() or not store().valid_token(APPLE_USER_TOKEN):
+        return
+    result = await canary.run(library())
+    store().set_check(CANARY, result.ok, result.error or "; ".join(result.steps))
+    event("canary", "", ok=result.ok, error=result.error)
+
+
+async def _canary_loop() -> None:
+    while True:
+        try:
+            await run_canary()
+        except Exception as e:  # noqa: BLE001 - a canary bug must not stop the server
+            event("canary_error", "", error=repr(e))
+        await asyncio.sleep(settings.canary_interval_seconds)
+
+
 @lifespan
-async def _mirror_loop(server):
-    """Runs the mirrors while the server runs, when MIRRORS_ENABLED is set."""
-    task = None
+async def _background(server):
+    """The mirror loop (with MIRRORS_ENABLED) and, when serving HTTP, the canary."""
+    tasks = []
     if settings.mirrors_enabled:
         try:
-            task = asyncio.create_task(scheduler().run())
+            tasks.append(asyncio.create_task(scheduler().run()))
         except (ConfigError, ToolError) as e:  # health shows why
             event("loop_not_started", "", error=str(e))
+    if settings.transport == "http" and settings.canary_interval_seconds > 0:
+        tasks.append(asyncio.create_task(_canary_loop()))
     try:
         yield {}
     finally:
-        if task:
+        for task in tasks:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
 
 mcp = FastMCP(
-    "mcp-apple-music", instructions=INSTRUCTIONS, auth=_auth, lifespan=_mirror_loop
+    "mcp-apple-music", instructions=INSTRUCTIONS, auth=_auth, lifespan=_background
 )
 mcp.add_middleware(UsageMiddleware("apple-music"))
 
@@ -156,7 +183,11 @@ def library() -> Library:
 def mirrors() -> list[Mirror]:
     """The configured mirrors. Raises ConfigError for an invalid file (not cached,
     so a fixed file is picked up on the next call)."""
-    return load_mirrors(settings.mirrors_file) if settings.mirrors_file else []
+    if settings.mirrors_file:
+        return load_mirrors(settings.mirrors_file)
+    return (
+        load_mirrors_inline(settings.mirrors_config) if settings.mirrors_config else []
+    )
 
 
 @functools.cache
@@ -194,34 +225,97 @@ async def read_limited(request: Request, limit: int = MAX_BODY_BYTES) -> bytes |
 # -- health -------------------------------------------------------------------
 
 
-def _user_token_state() -> dict:
+def _ts(value: float | None) -> str | None:
+    return datetime.fromtimestamp(value, timezone.utc).isoformat() if value else None
+
+
+def _credentials() -> dict:
+    """Each credential's state; never a value."""
+    now = datetime.now(timezone.utc).timestamp()
+    try:
+        dev = developer_token()
+        developer = {"state": "valid" if dev else "missing"}
+    except Exception as e:  # noqa: BLE001 - a malformed key raises on first mint
+        developer = {"state": "invalid", "error": type(e).__name__}
+    web = apple_web().token_state()
+    if web.get("expires_at"):
+        web["expires_at"] = _ts(web["expires_at"])
     tok = store().token(APPLE_USER_TOKEN)
     if tok is None:
-        return {"state": "missing", "obtained_at": None}
+        user = {"state": "missing"}
+    else:
+        age = (now - tok.obtained_at) / 86_400
+        state = "invalid" if tok.invalid else "valid"
+        if state == "valid" and age >= settings.apple_user_token_warn_days:
+            state = "expiring soon"
+        user = {
+            "state": state,
+            "obtained_at": _ts(tok.obtained_at),
+            "age_days": int(age),
+        }
+    sp = bool(
+        settings.spotify_client_id and settings.spotify_client_secret.get_secret_value()
+    )
     return {
-        "state": "invalid" if tok.invalid else "valid",
-        "obtained_at": datetime.fromtimestamp(
-            tok.obtained_at, timezone.utc
-        ).isoformat(),
+        "developer_token": developer,
+        "web_player_token": web,
+        "apple_user_token": user,
+        "spotify_app": {"state": "configured" if sp else "missing"},
+        "spotify_owner_login": {"state": "not used"},  # until a Spotify source exists
     }
+
+
+def _canary_health() -> dict:
+    row = store().check(CANARY)
+    if row is None:
+        return {"state": "not run yet"}
+    return {
+        "state": "ok" if row["ok"] else "failed",
+        "at": _ts(row["at"]),
+        **({} if row["ok"] else {"error": row["detail"]}),
+    }
+
+
+def _problems(creds: dict, mirrors_block: dict, canary_block: dict) -> list[str]:
+    problems = []
+    if creds["developer_token"]["state"] != "valid":
+        problems.append(f"MusicKit key {creds['developer_token']['state']}")
+    user = creds["apple_user_token"]["state"]
+    if user == "missing":
+        problems.append("Apple Music sign-in needed")
+    elif user != "valid":
+        problems.append(f"Apple Music sign-in {user}: sign in again")
+    if creds["web_player_token"]["state"] == "invalid":
+        problems.append("web-player token unavailable: removals are paused")
+    if canary_block["state"] == "failed":
+        problems.append("canary failed")
+    if mirrors_block.get("config_error"):
+        problems.append("mirrors file invalid")
+    problems += [f"mirror {name} failing" for name in mirrors_block.get("failing", [])]
+    return problems
 
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> JSONResponse:
-    """Public health endpoint."""
+    """Public health endpoint: states and times, never a secret."""
+    creds, mirrors_block, canary_block = (
+        _credentials(),
+        _mirrors_health(),
+        _canary_health(),
+    )
+    problems = _problems(creds, mirrors_block, canary_block)
     return JSONResponse(
         {
-            "status": "healthy",
+            "status": "degraded" if problems else "healthy",
+            "problems": problems,
             "service": "mcp-apple-music",
             "version": __version__,
             "uptime_seconds": int(
                 (datetime.now(timezone.utc) - _start_time).total_seconds()
             ),
-            "credentials": {
-                "musickit_key": "configured" if developer_token() else "missing",
-                "apple_user_token": _user_token_state(),
-            },
-            "mirrors": _mirrors_health(),
+            "credentials": creds,
+            "canary": canary_block,
+            "mirrors": mirrors_block,
         }
     )
 
@@ -237,10 +331,24 @@ def _mirrors_health() -> dict:
         configured = mirrors()
     except ConfigError as e:
         return {"enabled": settings.mirrors_enabled, "config_error": str(e)}
+    now = datetime.now(timezone.utc).timestamp()
+    rows = {m.name: store().mirror(m.name) for m in configured}
     return {
         "enabled": settings.mirrors_enabled,
         "count": len(configured),
-        "failing": [m.name for m in configured if _failing(store().mirror(m.name))],
+        "failing": [name for name, row in rows.items() if _failing(row)],
+        "each": [
+            {
+                "name": m.name,
+                "last_sync": _ts(rows[m.name]["last_sync"]) if rows[m.name] else None,
+                "coverage": (
+                    round(cov, 3)
+                    if (cov := coverage(store(), m, now)[0]) is not None
+                    else None
+                ),
+            }
+            for m in configured
+        ],
     }
 
 
@@ -295,6 +403,39 @@ async def apple_sign_in_complete(request: Request) -> JSONResponse:
     except AppleError as e:
         return answer(502, f"Signed in, but Apple could not confirm it yet: {e}")
     return answer(200, f"Signed in (storefront {storefront}). You can close this page.")
+
+
+# -- paths outside bearer auth ---------------------------------------------------
+
+
+class GateUnknownPaths:
+    """Without the API key, only /health, /hooks/* and /auth/* answer (each has its
+    own gate); /mcp has FastMCP's bearer check. Anything else is a 401, so the
+    server's surface can't be mapped without the key."""
+
+    def __init__(self, app, api_key: str) -> None:
+        self.app = app
+        self.expected = f"Bearer {api_key}".encode()
+
+    async def __call__(self, scope, receive, send) -> None:
+        path = scope.get("path", "")
+        gated_elsewhere = path in ("/mcp", "/health") or path.startswith(
+            ("/mcp/", "/hooks/", "/auth/")
+        )
+        given = dict(scope.get("headers", [])).get(b"authorization", b"")
+        if (
+            scope["type"] == "http"
+            and not gated_elsewhere
+            and not hmac.compare_digest(given, self.expected)
+        ):
+            await JSONResponse({"error": "Unauthorized"}, 401)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def http_middleware() -> list:
+    key = settings.mcp_api_key.get_secret_value()
+    return [StarletteMiddleware(GateUnknownPaths, api_key=key)] if key else []
 
 
 # -- webhook: tracks pushed by a station (gated by the path secret) ---------------
@@ -1222,6 +1363,7 @@ def main(argv: list[str] | None = None) -> None:
             host=settings.host,
             port=settings.port,
             stateless_http=True,
+            middleware=http_middleware(),
         )
     else:
         mcp.run()
