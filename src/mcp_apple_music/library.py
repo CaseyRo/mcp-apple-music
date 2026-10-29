@@ -132,7 +132,9 @@ class Library:
                 prefix, n = appended
                 head = [track_id(t) for t in tracks[: len(prefix)]]
                 if len(tracks) == len(prefix) + n and head == prefix:
-                    tail = [catalog_id(t) for t in tracks[len(prefix) :]]
+                    # A track gone from the catalog lists no catalog ID: its library ID
+                    # is then the only stable name for it.
+                    tail = [catalog_id(t) or track_id(t) for t in tracks[len(prefix) :]]
                     return Verified(rail, True, tracks=tracks, listed=tail)
             after = Counter(map(key, tracks))
             failed = [

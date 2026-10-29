@@ -24,21 +24,22 @@ from .fakes import Clock
 MIN = 60_000  # ms
 
 
+UNCATALOGUED = "gone-"  # a library track whose song left the catalog: no playParams
+
+
 def song(catalog: str, minutes: float = 1) -> dict:
-    return {
-        "id": f"i.{catalog}",
-        "type": "library-songs",
-        "attributes": {
-            "name": catalog,
-            "artistName": "Artist",
-            "durationInMillis": int(minutes * MIN),
-            "playParams": {
-                "id": f"i.{catalog}",
-                "isLibrary": True,
-                "catalogId": catalog,
-            },
-        },
+    attributes = {
+        "name": catalog,
+        "artistName": "Artist",
+        "durationInMillis": int(minutes * MIN),
     }
+    if not catalog.startswith(UNCATALOGUED):
+        attributes["playParams"] = {
+            "id": f"i.{catalog}",
+            "isLibrary": True,
+            "catalogId": catalog,
+        }
+    return {"id": f"i.{catalog}", "type": "library-songs", "attributes": attributes}
 
 
 class FakeApple:
@@ -448,3 +449,33 @@ async def test_history_records_what_changed(engine, apple, matcher):
         ("added", "A – Artist"),
         ("repair", "removed stray"),
     ]
+
+
+async def test_tracks_gone_from_the_catalog_still_expire(engine, apple, matcher):
+    """Live 2026-10-29: 3 of an adopted playlist's 429 tracks listed no catalog ID.
+    They must count, expire and be removed like the rest, not be matched again."""
+    apple.playlists["p.rock"] = ["gone-Fame", "O2", "O3", "gone-America", "O5"]
+    apple.names["p.rock"] = "x"
+    m = rock(playlist_id="p.rock")
+    res = await engine.sync(m)
+    assert res.added == [] and matcher.calls == 0  # nothing re-matched or re-appended
+    push(engine, m, "N1")
+    res = await engine.sync(m)
+    assert res.removed == ["gone-Fame"] and res.repairs == []
+    assert apple.playlists["p.rock"] == ["O2", "O3", "gone-America", "O5", "N1"]
+
+
+async def test_leftover_uncatalogued_copies_are_cleaned_up(engine, apple):
+    """What the first live adoption left behind: copies the engine couldn't see.
+    Now visible, they are strays and the next sync removes them."""
+    apple.playlists["p.rock"] = ["A"]
+    apple.names["p.rock"] = "x"
+    m = rock(playlist_id="p.rock")
+    await engine.sync(m)
+    apple.playlists["p.rock"] = ["gone-Fame", "A", "gone-Blue"]
+    res = await engine.sync(m)
+    assert sorted(res.repairs) == [
+        "removed stray: gone-Blue (i.gone-Blue)",
+        "removed stray: gone-Fame (i.gone-Fame)",
+    ]
+    assert apple.playlists["p.rock"] == ["A"]

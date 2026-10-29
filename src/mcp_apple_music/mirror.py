@@ -142,6 +142,14 @@ def label(e) -> str:
     return f"{e['title']} – {e['artists']}" if e["artists"] else e["title"]
 
 
+def song_key(track: dict) -> str | None:
+    """How the engine counts a playlist track: its catalog ID, else its library ID.
+    Tracks gone from the catalog (seen live 2026-10-29: 3 of 429 in one adopted
+    playlist) list no catalog ID; without the fallback they were invisible, never
+    expired, and their songs were matched and appended a second time."""
+    return catalog_id(track) or track_id(track)
+
+
 def _playable(e) -> bool:
     return bool(e["apple_song_id"]) and not e["unavailable_reason"]
 
@@ -153,7 +161,7 @@ def _seed(track: dict) -> dict:
         "artists": a.get("artistName", ""),
         "album": a.get("albumName"),
         "duration_ms": a.get("durationInMillis"),
-        "apple_song_id": catalog_id(track),
+        "apple_song_id": song_key(track),
         "match_method": "adopted",
         "placed": 1,
     }
@@ -299,11 +307,9 @@ class Engine:
         if not listing and any(e["placed"] for e in entries):
             # Apple lists a deleted playlist as empty: fail here instead of appending.
             await self.library.api.library_playlist(pid)
-        actual = Counter(c for c in map(catalog_id, listing) if c)
-        name = {
-            catalog_id(t): t.get("attributes", {}).get("name", "?") for t in listing
-        }
-        lib_id = {catalog_id(t): track_id(t) for t in listing}
+        actual = Counter(c for c in map(song_key, listing) if c)
+        name = {song_key(t): t.get("attributes", {}).get("name", "?") for t in listing}
+        lib_id = {song_key(t): track_id(t) for t in listing}
         live: defaultdict[str, list] = defaultdict(list)
         out: defaultdict[str, list] = defaultdict(list)  # expired, copy still listed
         for e in entries:
