@@ -122,6 +122,19 @@ def expire_count(durations: list[int | None], window_ms: int) -> int:
     return n
 
 
+def coverage(store: Store, m: Mirror, now: float) -> tuple[float | None, int | None]:
+    """Music received over the last 24 h (or since the mirror started) per second of
+    wall time, and the shortest gap between arrivals. ~1.0 means nothing was missed
+    if the station plays back to back; talk and ads lower it a little."""
+    row = store.mirror(m.name)
+    since = max(now - 86_400, row["created_at"] if row else now)
+    rows = store.arrivals(m.name, since)
+    span = now - since
+    total = sum(r["duration_ms"] or DEFAULT_DURATION_MS for r in rows) / 1000
+    gaps = [b["at"] - a["at"] for a, b in zip(rows, rows[1:])]
+    return (total / span if span >= 3600 else None), (int(min(gaps)) if gaps else None)
+
+
 def label(e) -> str:
     return f"{e['title']} – {e['artists']}" if e["artists"] else e["title"]
 
@@ -220,14 +233,15 @@ class Engine:
 
     # -- sync -------------------------------------------------------------------
 
-    async def sync(self, m: Mirror) -> SyncResult:
+    async def sync(self, m: Mirror, removals: bool = True) -> SyncResult:
+        """``removals=False`` while the web rail backs off: appends only."""
         async with self._locks[m.name]:
             res = SyncResult(m.name)
             try:
                 res.playlist_id = await self.setup(m)
                 await self._match(m, res)
                 self._trim(m)
-                await self._apply(m, res.playlist_id, res)
+                await self._apply(m, res.playlist_id, res, removals)
             except AppleError as e:
                 self.store.record_sync(m.name, str(e))
                 event("sync_failed", m.name, error=str(e))
@@ -269,7 +283,9 @@ class Engine:
         for e in live[:n]:
             self.store.update_entry(m.name, e["seq"], expired=1)
 
-    async def _apply(self, m: Mirror, pid: str, res: SyncResult) -> None:
+    async def _apply(
+        self, m: Mirror, pid: str, res: SyncResult, removals: bool = True
+    ) -> None:
         listing = (await self.library.api.playlist_tracks(pid)).data
         entries = self.store.entries(m.name)
         if not listing and any(e["placed"] for e in entries):
@@ -310,9 +326,15 @@ class Engine:
             )
             event("drift_refused", m.name, drift=drift)
 
-        removed, down = await self._remove(
-            pid, +(expected + strays), lib_id, actual, res
-        )
+        excess = +(expected + strays)
+        if removals:
+            removed, down = await self._remove(pid, excess, lib_id, actual, res)
+        else:
+            removed, down = Counter(), bool(excess)
+            if excess:
+                res.notes.append(
+                    "Removals paused: the web rail is backing off after a 429."
+                )
         for song, n in removed.items():
             res.removed += [name[song]] * n
             for _ in range(n - min(n, expected[song])):

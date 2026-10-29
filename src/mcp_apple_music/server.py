@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import functools
 import hmac
@@ -15,6 +16,7 @@ from typing import Annotated, Literal
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.lifespan import lifespan
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 from starlette.requests import Request
@@ -29,7 +31,7 @@ from .config import settings
 from .devtoken import DeveloperToken
 from .library import Library
 from .matching import Matcher
-from .mirror import Engine
+from .mirror import Engine, coverage, event
 from .mirror_config import ConfigError, Mirror
 from .mirror_config import load as load_mirrors
 from .rails import (
@@ -39,7 +41,8 @@ from .rails import (
     UserTokenMissing,
     UserTokenRejected,
 )
-from .sources import track_from_payload
+from .scheduler import Scheduler
+from .sources import Feed, track_from_payload
 from .spotify import SpotifyClient
 from .store import APPLE_USER_TOKEN, LINK_TTL_SECONDS, Store
 from .usage import UsageMiddleware
@@ -69,9 +72,32 @@ Apple Music: search the catalog and the owner's library, and manage playlists.
   idempotent: after an error, call get_playlist before retrying.
 - If a tool says sign-in is needed, call sign_in_link and give the URL to the
   user to open in their browser; never open it yourself. Retry after they confirm.
+- Mirrors keep a playlist equal to a source's last hours of music (mirror_status,
+  sync_mirror). Don't edit a mirror's playlist by hand: the next sync undoes it.
 """
 
-mcp = FastMCP("mcp-apple-music", instructions=INSTRUCTIONS, auth=_auth)
+
+@lifespan
+async def _mirror_loop(server):
+    """Runs the mirrors while the server runs, when MIRRORS_ENABLED is set."""
+    task = None
+    if settings.mirrors_enabled:
+        try:
+            task = asyncio.create_task(scheduler().run())
+        except (ConfigError, ToolError) as e:  # health shows why
+            event("loop_not_started", "", error=str(e))
+    try:
+        yield {}
+    finally:
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+mcp = FastMCP(
+    "mcp-apple-music", instructions=INSTRUCTIONS, auth=_auth, lifespan=_mirror_loop
+)
 mcp.add_middleware(UsageMiddleware("apple-music"))
 
 MAX_BODY_BYTES = 64 * 1024
@@ -146,6 +172,11 @@ def engine() -> Engine:
     return Engine(store(), library(), Matcher(apple_api(), store(), spotify()))
 
 
+@functools.cache
+def scheduler() -> Scheduler:
+    return Scheduler(engine(), Feed(store()), mirrors())
+
+
 def public_url() -> str:
     return settings.public_url or f"http://127.0.0.1:{settings.port}"
 
@@ -190,8 +221,27 @@ async def health_check(request: Request) -> JSONResponse:
                 "musickit_key": "configured" if developer_token() else "missing",
                 "apple_user_token": _user_token_state(),
             },
+            "mirrors": _mirrors_health(),
         }
     )
+
+
+def _failing(row) -> bool:
+    return bool(row and row["last_error"]) and (row["last_error_at"] or 0) > (
+        row["last_sync"] or 0
+    )
+
+
+def _mirrors_health() -> dict:
+    try:
+        configured = mirrors()
+    except ConfigError as e:
+        return {"enabled": settings.mirrors_enabled, "config_error": str(e)}
+    return {
+        "enabled": settings.mirrors_enabled,
+        "count": len(configured),
+        "failing": [m.name for m in configured if _failing(store().mirror(m.name))],
+    }
 
 
 # -- Apple sign-in (gated by a single-use link, not the bearer key) ---------------
@@ -276,6 +326,8 @@ async def webhook(request: Request) -> JSONResponse:
     if mirror is None:
         return JSONResponse({"error": f"No mirror is bound to playlist {key!r}."}, 422)
     new = ingest(mirror, [track], "webhook")
+    if new and settings.mirrors_enabled:
+        scheduler().wake(mirror.name)
     return JSONResponse({"accepted": True, "new": bool(new)}, 202)
 
 
@@ -957,6 +1009,202 @@ async def sign_in_link(service: Literal["apple"] = "apple") -> SignInLink:
 
 
 # -- entry points -------------------------------------------------------------
+
+
+# -- mirrors --------------------------------------------------------------------
+
+
+class UnavailableTrack(BaseModel):
+    title: str
+    artists: str
+    album: str | None = None
+    spotify_id: str | None = None
+    isrc: str | None = None
+    reason: str
+
+
+class MirrorInfo(BaseModel):
+    name: str
+    source: str = Field(description="Where tracks come from.")
+    playlist_id: str | None = Field(description="None until the first sync sets it up.")
+    window_tracks: int = Field(description="Occurrences in the window now.")
+    window_hours: float = Field(description="Their total duration.")
+    window_limit_hours: float
+    last_sync: str | None
+    last_error: str | None = Field(
+        description="The last failure, if it came after the last successful sync."
+    )
+    coverage: float | None = Field(
+        description="Music received per hour of wall time over the last 24 h; near "
+        "1.0 when nothing is missed. None in the first hour."
+    )
+    possibly_missing_tracks: bool = Field(
+        description="Coverage is below the threshold after a full day."
+    )
+    shortest_gap_seconds: int | None = Field(
+        description="Shortest time between two arrivals; below the feed's poll "
+        "interval, a track could slip between polls."
+    )
+    unavailable: list[UnavailableTrack] = Field(
+        description="Tracks in the window that Apple Music lacks; left out."
+    )
+    ambiguous: list[str] = Field(
+        description="Title matches with several Apple candidates; the first was used."
+    )
+    recent_repairs: list[str]
+
+
+class MirrorStatus(BaseModel):
+    summary: str
+    enabled: bool = Field(description="Whether the loop runs (MIRRORS_ENABLED).")
+    config_error: str | None = None
+    mirrors: list[MirrorInfo] = []
+
+
+class MirrorSync(BaseModel):
+    mirror: str
+    playlist_id: str | None = None
+    added: list[str] = []
+    removed: list[str] = []
+    failed: list[str] = []
+    unavailable: list[str] = []
+    repairs: list[str] = []
+    notes: list[str] = []
+    error: str | None = None
+
+
+class SyncReport(BaseModel):
+    summary: str
+    results: list[MirrorSync]
+
+
+def _iso(ts: float | None) -> str | None:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else None
+
+
+def _selected(name: str | None) -> list[Mirror]:
+    try:
+        configured = mirrors()
+    except ConfigError as e:
+        raise ToolError(f"The mirrors file is invalid: {e}") from e
+    if not name:
+        return configured
+    chosen = [m for m in configured if m.name == name.casefold()]
+    if not chosen:
+        names = ", ".join(m.name for m in configured) or "none configured"
+        raise ToolError(f"No mirror named {name!r} (mirrors: {names}).")
+    return chosen
+
+
+def _mirror_info(m: Mirror) -> MirrorInfo:
+    st = store()
+    row = st.mirror(m.name)
+    entries = st.entries(m.name)
+    live = [e for e in entries if not e["expired"]]
+    now = datetime.now(timezone.utc).timestamp()
+    cov, gap = coverage(st, m, now)
+    full_day = bool(row) and now - row["created_at"] >= 86_400
+    source = f"feed: {m.source.url}" if m.source.type == "feed" else m.source.type
+    return MirrorInfo(
+        name=m.name,
+        source=source,
+        playlist_id=row["playlist_id"] if row else None,
+        window_tracks=len(live),
+        window_hours=round(sum(e["duration_ms"] or 0 for e in live) / 3_600_000, 2),
+        window_limit_hours=round(m.window_seconds / 3600, 2),
+        last_sync=_iso(row["last_sync"]) if row else None,
+        last_error=row["last_error"] if _failing(row) else None,
+        coverage=round(cov, 3) if cov is not None else None,
+        possibly_missing_tracks=full_day
+        and cov is not None
+        and cov < settings.mirror_coverage_threshold,
+        shortest_gap_seconds=gap,
+        unavailable=[
+            UnavailableTrack(
+                title=e["title"],
+                artists=e["artists"],
+                album=e["album"],
+                spotify_id=e["spotify_id"],
+                isrc=e["isrc"],
+                reason=e["unavailable_reason"],
+            )
+            for e in live
+            if e["unavailable_reason"]
+        ],
+        ambiguous=[
+            f"{e['title']} – {e['artists']} ({e['apple_song_id']})"
+            for e in live
+            if e["match_method"] == "title-ambiguous"
+        ],
+        recent_repairs=[
+            f"{_iso(r['at'])} {r['action']}: {r['detail']}"
+            for r in st.repairs(m.name, 10)
+        ],
+    )
+
+
+@mcp.tool(tags=_TAGS, annotations=ToolAnnotations(title="Mirror status", **_READ))
+async def mirror_status(name: str | None = None) -> MirrorStatus:
+    """[apple-music] Each mirror's source, playlist, window, last sync and error,
+    source coverage, tracks Apple lacks, ambiguous matches and recent repairs.
+    Omit `name` for all mirrors."""
+    try:
+        chosen = _selected(name)
+    except ToolError as e:
+        if name:
+            raise
+        return MirrorStatus(
+            summary=str(e), enabled=settings.mirrors_enabled, config_error=str(e)
+        )
+    infos = [_mirror_info(m) for m in chosen]
+    failing = [i.name for i in infos if i.last_error]
+    state = "running" if settings.mirrors_enabled else "off (MIRRORS_ENABLED=false)"
+    summary = f"{len(infos)} mirrors, loop {state}." + (
+        f" Failing: {', '.join(failing)}." if failing else ""
+    )
+    return MirrorStatus(
+        summary=summary, enabled=settings.mirrors_enabled, mirrors=infos
+    )
+
+
+@mcp.tool(
+    tags=_TAGS,
+    annotations=ToolAnnotations(
+        title="Sync mirrors now",
+        read_only_hint=False,
+        destructive_hint=True,  # removes expired and stray tracks
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
+)
+async def sync_mirror(name: str | None = None) -> SyncReport:
+    """[apple-music] Poll and sync one mirror, or all when `name` is omitted, and
+    report the tracks added, removed and failed. Needs the loop on."""
+    if not settings.mirrors_enabled:
+        raise ToolError(
+            "Mirrors are off (MIRRORS_ENABLED=false), so nothing is written. "
+            "Set MIRRORS_ENABLED=true and restart to run them."
+        )
+    loop = scheduler()
+    results = []
+    with _apple_errors():
+        for m in _selected(name):
+            await loop.poll(m)
+            try:
+                r = await loop.sync(m)
+            except (UserTokenMissing, UserTokenRejected):
+                raise
+            except AppleError as e:
+                results.append(MirrorSync(mirror=m.name, error=str(e)))
+                continue
+            results.append(MirrorSync(**vars(r)))
+    added = sum(len(r.added) for r in results)
+    removed = sum(len(r.removed) for r in results)
+    errors = [r.mirror for r in results if r.error]
+    summary = f"Synced {len(results)} mirrors: {added} added, {removed} removed." + (
+        f" Failed: {', '.join(errors)}." if errors else ""
+    )
+    return SyncReport(summary=summary, results=results)
 
 
 def main(argv: list[str] | None = None) -> None:

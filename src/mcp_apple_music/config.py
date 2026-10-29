@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # playlists people may follow, so turning the loop on is a deliberate step.
     mirrors_file: Path | None = None
     mirrors_enabled: bool = False
+    # Received music per hour of wall time below this flags possibly missed tracks.
+    mirror_coverage_threshold: float = 0.9
     # POST /hooks/<secret> exists only when this is set.
     webhook_secret: SecretStr = SecretStr("")
     # A Spotify app (client credentials) gives each track's ISRC; without it,
