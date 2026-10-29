@@ -38,6 +38,7 @@ def isolated_state(request, tmp_path, monkeypatch):
         srv.mirrors,
         srv.spotify,
         srv.engine,
+        srv.scheduler,
     )
     for f in cached:
         f.cache_clear()

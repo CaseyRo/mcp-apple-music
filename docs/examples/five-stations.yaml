@@ -1,0 +1,18 @@
+# Five stations, each mirrored as its last 24 hours of music. Feeds return the
+# station's newest track; a webhook push (same keys) makes delivery instant.
+mirrors:
+  - name: rock
+    playlist_name: "24h ▷ Rock"
+    source: {type: feed, url: "https://radio.example/api/rock.json"}
+  - name: fresh
+    playlist_name: "24h ▷ Fresh"
+    source: {type: feed, url: "https://radio.example/api/fresh.json"}
+  - name: relax
+    playlist_name: "24h ▷ Relax"
+    source: {type: feed, url: "https://radio.example/api/relax.json"}
+  - name: soul
+    playlist_name: "24h ▷ Soul"
+    source: {type: feed, url: "https://radio.example/api/soul.json"}
+  - name: music
+    playlist_name: "24h ▷ Music"
+    source: {type: feed, url: "https://radio.example/api/music.json"}
