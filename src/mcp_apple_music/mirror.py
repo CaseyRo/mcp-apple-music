@@ -410,7 +410,8 @@ class Engine:
             self._unavailable(m, batch[0], f"Apple refused the add: {err.reason}", res)
             return
         failed = Counter(v.failed)
-        for e in batch:
+        listed = v.listed or [None] * len(batch)
+        for e, as_listed in zip(batch, listed):
             song = e["apple_song_id"]
             if failed[song] and v.reason == NOT_ADDED:
                 failed[song] -= 1
@@ -419,7 +420,10 @@ class Engine:
                 failed[song] -= 1
                 res.failed.append(label(e))
             else:
-                self.store.update_entry(m.name, e["seq"], placed=1)
+                fields = {"placed": 1}
+                if as_listed and as_listed != song:  # the library's copy went in
+                    fields["apple_song_id"] = as_listed
+                self.store.update_entry(m.name, e["seq"], **fields)
                 res.added.append(label(e))
                 if e["placed"]:  # it had been in the playlist before
                     self._repair(m, res, "re-appended", label(e))

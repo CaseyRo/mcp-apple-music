@@ -52,6 +52,7 @@ class FakeApple:
         self.never_listed: set[str] = set()  # accepted, but never shows up
         self.unremovable: set[str] = set()  # removal answered with a 404
         self.refused: set[str] = set()  # answered with a 400
+        self.listed_as: dict[str, str] = {}  # the library's copy goes in instead
         self.web_down = False
         self.writes: list[tuple] = []
 
@@ -75,9 +76,12 @@ class FakeApple:
         if self.refused & set(ids):
             raise AppleError("api", 400, "Invalid song id")
         self.writes.append(("add", *ids))
-        self.playlists[pid] += [c for c in ids if c not in self.never_listed]
+        shown = [self.listed_as.get(c, c) for c in ids if c not in self.never_listed]
+        self.playlists[pid] += shown
         failed = [c for c in ids if c in self.never_listed]
-        return Verified("api", not failed, NOT_ADDED if failed else None, failed)
+        if failed:
+            return Verified("api", False, NOT_ADDED, failed)
+        return Verified("api", True, listed=shown)
 
     async def remove_tracks(self, pid: str, lib_ids: list[str]) -> Verified:
         if self.web_down:
@@ -366,3 +370,19 @@ async def test_deleted_playlist_fails_the_sync_instead_of_appending(engine, appl
     with pytest.raises(AppleError, match="Not Found"):
         await engine.sync(m)
     assert all(e["unavailable_reason"] is None for e in engine.store.entries("rock"))
+
+
+async def test_song_listed_under_another_id_is_followed_not_churned(engine, apple):
+    apple.listed_as = {"B": "B-library"}
+    m = rock()
+    push(engine, m, "A", "B")
+    pid = (await engine.sync(m)).playlist_id
+    assert apple.playlists[pid] == ["A", "B-library"]
+    res = await engine.sync(m)  # the next sync sees the copy as B, not as a stray
+    assert (res.removed, res.added, res.repairs) == ([], [], [])
+    (b,) = [e for e in engine.store.entries("rock") if e["title"] == "B"]
+    assert (b["apple_song_id"], b["placed"], b["unavailable_reason"]) == (
+        "B-library",
+        1,
+        None,
+    )

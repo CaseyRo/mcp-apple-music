@@ -82,6 +82,21 @@ async def test_add_confirmed(library, apple):
     assert len(result.tracks) == 2 and library.slept == []
 
 
+async def test_add_listed_under_the_librarys_own_copy(library, apple):
+    """Live 2026-10-29: catalog 185868578 went in as the library's 323489066, the
+    same recording from another album. The playlist grew by one: that's the add."""
+    apple.on("GET", TRACKS, 200, listing(lib_track("i.1", "s1")))
+    apple.on(
+        "GET",
+        TRACKS,
+        200,
+        listing(lib_track("i.1", "s1"), lib_track("i.EY", "323489066")),
+    )
+    apple.on("POST", TRACKS, 204)
+    result = await library.add_tracks("p.1", ["185868578"])
+    assert (result.ok, result.listed) == (True, ["323489066"])
+
+
 async def test_add_2xx_but_absent_is_a_failure(library, apple):
     apple.on("GET", TRACKS, 200, listing(lib_track("i.1", "s1")))
     apple.on("POST", TRACKS, 204)

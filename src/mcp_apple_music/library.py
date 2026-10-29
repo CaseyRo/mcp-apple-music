@@ -32,6 +32,9 @@ class Verified:
     failed: list[str] = field(default_factory=list)  # ids whose write didn't take
     tracks: list[dict] | None = None  # the playlist as read back; None if unreadable
     stopped: str | None = None  # a removal loop broke off here; earlier ones went
+    # Appends: the catalog ID the playlist lists each song under, in request order.
+    # Apple may list the library's own copy, from another release, instead.
+    listed: list[str | None] | None = None
 
 
 def catalog_id(track: dict) -> str | None:
@@ -57,12 +60,24 @@ class Library:
         self._sleep = sleep
 
     async def add_tracks(self, playlist_id: str, song_ids: list[str]) -> Verified:
-        """Append catalog songs; verified against the documented rail's listing."""
+        """Append catalog songs; verified against the documented rail's listing.
+
+        Apple appends at the end in order, so the add is confirmed when the playlist
+        grew by exactly these songs with everything before them unchanged. That
+        holds even when Apple lists a song under another catalog ID (it uses the
+        library's copy if there is one, which may come from another release)."""
         read = functools.partial(self.api.playlist_tracks, playlist_id)
-        before = Counter(map(catalog_id, (await read()).data))
+        prior = (await read()).data
         await self.api.append_tracks(playlist_id, song_ids)
         return await self._settle(
-            self.api.rail, read, catalog_id, before, Counter(song_ids), +1, NOT_ADDED
+            self.api.rail,
+            read,
+            catalog_id,
+            Counter(map(catalog_id, prior)),
+            Counter(song_ids),
+            +1,
+            NOT_ADDED,
+            appended=([track_id(t) for t in prior], len(song_ids)),
         )
 
     async def remove_tracks(self, playlist_id: str, track_ids: list[str]) -> Verified:
@@ -97,6 +112,7 @@ class Library:
         need: Counter,
         direction: int,
         reason: str,
+        appended: tuple[list[str | None], int] | None = None,
     ) -> Verified:
         failed: list[str] = list(need)
         tracks: list[dict] | None = None
@@ -112,6 +128,12 @@ class Library:
                     f"accepted by Apple, but the read-back failed: {e}",
                     list(need),
                 )
+            if appended:
+                prefix, n = appended
+                head = [track_id(t) for t in tracks[: len(prefix)]]
+                if len(tracks) == len(prefix) + n and head == prefix:
+                    tail = [catalog_id(t) for t in tracks[len(prefix) :]]
+                    return Verified(rail, True, tracks=tracks, listed=tail)
             after = Counter(map(key, tracks))
             failed = [
                 i for i, n in need.items() if (after[i] - before[i]) * direction < n
