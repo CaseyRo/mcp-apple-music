@@ -25,6 +25,7 @@ EXPECTED_TOOLS: set[str] = {
     "remove_tracks",
     "sign_in_link",
     "mirror_status",
+    "mirror_audit",
     "sync_mirror",
 }
 

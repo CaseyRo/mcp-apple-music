@@ -97,7 +97,7 @@ def test_schema_version_set_and_reopen_is_a_no_op(tmp_path, clock):
     again = Store(path, clock=clock)  # the migration is idempotent and keeps data
     assert again.valid_token(APPLE_USER_TOKEN) == "MUT"
     again.close()
-    assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == 2
+    assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_newer_schema_refused(tmp_path, clock):
@@ -116,3 +116,20 @@ def test_two_writers_share_the_file(tmp_path, clock):
     assert [r["key"] for r in a.arrivals("rock", 0)] == ["spotify:1", "spotify:2"]
     a.close()
     b.close()
+
+
+def test_errors_are_logged_once_per_failure(store, clock):
+    store.record_sync("rock", "feed: down")
+    clock.now += 20
+    store.record_sync("rock", "feed: down")  # the same failure, retried
+    clock.now += 20
+    store.record_sync("rock", "api rail: HTTP 500")  # a different one
+    clock.now += 20
+    store.record_sync("rock")  # recovered
+    clock.now += 20
+    store.record_sync("rock", "feed: down")  # a new failure episode
+    assert [r["detail"] for r in reversed(store.history("rock", 0))] == [
+        "feed: down",
+        "api rail: HTTP 500",
+        "feed: down",
+    ]

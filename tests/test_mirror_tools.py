@@ -187,3 +187,22 @@ async def test_loop_runs_while_the_server_runs(monkeypatch, tmp_path, apple, mat
         srv.scheduler().wake("rock")  # what the webhook does after storing
         await until(lambda: apple.playlists["p.1"] == ["A"])
     assert not srv.scheduler()._running  # stopped with the server
+
+
+async def test_audit_counts_changes_and_checks_the_playlist(
+    configured, apple, matcher, monkeypatch
+):
+    monkeypatch.setattr(srv, "apple_api", lambda: apple)
+    matcher.missing = {"B"}
+    push(configured, "A", "B", "C")
+    await call("sync_mirror", {"name": "rock"})
+    out = await call("mirror_audit", {"name": "rock", "hours": 24})
+    (a,) = out["mirrors"]
+    assert a["counts"] == {"created": 1, "skipped": 1, "added": 2}
+    assert (a["playlist_tracks"], a["expected_tracks"], a["in_step"]) == (2, 2, True)
+    assert a["recent"][0].split(" ", 1)[1].startswith("added C – Artist")
+    pid = srv.store().mirror("rock")["playlist_id"]
+    apple.playlists[pid].append("X")  # someone edits the playlist by hand
+    (a,) = (await call("mirror_audit", {"name": "rock"}))["mirrors"]
+    assert a["in_step"] is False
+    assert "Out of step: rock" in (await call("mirror_audit"))["summary"]
