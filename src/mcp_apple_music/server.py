@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import hmac
 import json
 import os
 import re
@@ -27,6 +28,10 @@ from .auth import BearerTokenVerifier
 from .config import settings
 from .devtoken import DeveloperToken
 from .library import Library
+from .matching import Matcher
+from .mirror import Engine
+from .mirror_config import ConfigError, Mirror
+from .mirror_config import load as load_mirrors
 from .rails import (
     AppleError,
     RailUnavailable,
@@ -34,6 +39,8 @@ from .rails import (
     UserTokenMissing,
     UserTokenRejected,
 )
+from .sources import track_from_payload
+from .spotify import SpotifyClient
 from .store import APPLE_USER_TOKEN, LINK_TTL_SECONDS, Store
 from .usage import UsageMiddleware
 
@@ -117,6 +124,26 @@ def apple_web() -> AppleWebPlayer:
 @functools.cache
 def library() -> Library:
     return Library(apple_api(), apple_web())
+
+
+@functools.cache
+def mirrors() -> list[Mirror]:
+    """The configured mirrors. Raises ConfigError for an invalid file (not cached,
+    so a fixed file is picked up on the next call)."""
+    return load_mirrors(settings.mirrors_file) if settings.mirrors_file else []
+
+
+@functools.cache
+def spotify() -> SpotifyClient | None:
+    secret = settings.spotify_client_secret.get_secret_value()
+    if not (settings.spotify_client_id and secret):
+        return None
+    return SpotifyClient(settings.spotify_client_id, secret)
+
+
+@functools.cache
+def engine() -> Engine:
+    return Engine(store(), library(), Matcher(apple_api(), store(), spotify()))
 
 
 def public_url() -> str:
@@ -218,6 +245,38 @@ async def apple_sign_in_complete(request: Request) -> JSONResponse:
     except AppleError as e:
         return answer(502, f"Signed in, but Apple could not confirm it yet: {e}")
     return answer(200, f"Signed in (storefront {storefront}). You can close this page.")
+
+
+# -- webhook: tracks pushed by a station (gated by the path secret) ---------------
+
+WEBHOOK_MAX_BYTES = 16 * 1024
+
+
+@mcp.custom_route("/hooks/{secret}", methods=["POST"])
+async def webhook(request: Request) -> JSONResponse:
+    """Stores the track and answers at once; the mirror loop matches and writes it."""
+    expected = settings.webhook_secret.get_secret_value().encode()
+    given = request.path_params.get("secret", "").encode()
+    if not expected or not hmac.compare_digest(given, expected):
+        return JSONResponse({"error": "Not Found"}, 404)
+    raw = await read_limited(request, WEBHOOK_MAX_BYTES)
+    if raw is None:
+        return JSONResponse({"error": "Request too large."}, 413)
+    try:
+        body = json.loads(raw)
+        track = track_from_payload(body)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, 400)
+    key = str(body.get("playlist") or "").casefold()
+    try:
+        mirror = next((m for m in mirrors() if m.key == key), None)
+        ingest = engine().ingest
+    except (ConfigError, ToolError) as e:
+        return JSONResponse({"error": f"Mirrors unavailable: {e}"}, 503)
+    if mirror is None:
+        return JSONResponse({"error": f"No mirror is bound to playlist {key!r}."}, 422)
+    new = ingest(mirror, [track], "webhook")
+    return JSONResponse({"accepted": True, "new": bool(new)}, 202)
 
 
 # -- tools ----------------------------------------------------------------------

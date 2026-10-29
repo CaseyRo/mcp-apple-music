@@ -68,11 +68,21 @@ class Track:
     duration_ms: int | None = None
 
     @property
-    def key(self) -> str:
-        """What a double delivery is recognised by."""
-        if self.spotify_id:
-            return f"spotify:{self.spotify_id}"
+    def text_key(self) -> str | None:
+        if not self.title:
+            return None
         return f"text:{_fold(self.title)}|{_fold(self.artists)}"
+
+    @property
+    def key(self) -> str:
+        """The track's identity: its Spotify ID, else its title and artists."""
+        return f"spotify:{self.spotify_id}" if self.spotify_id else self.text_key or ""
+
+    @property
+    def keys(self) -> list[str]:
+        """What a double delivery is recognised by: a webhook may send no ID for a
+        track the feed reports with one."""
+        return [k for k in dict.fromkeys([self.key, self.text_key]) if k]
 
 
 @dataclass(frozen=True)
@@ -82,6 +92,9 @@ class Match:
     duration_ms: int | None = None
     isrc: str | None = None
     reason: str | None = None  # why there is no Apple song
+    title: str | None = None  # details completed from Spotify for an ID-only push
+    artists: str | None = None
+    album: str | None = None
 
 
 Matcher = Callable[[sqlite3.Row], Awaitable[Match]]
@@ -153,9 +166,9 @@ class Engine:
         Only SQLite: safe to call from a request handler that must answer fast."""
         new = 0
         for t in tracks:
-            if self.store.arrived_within(m.name, t.key, self.horizon):
+            if not t.key or self.store.arrived_within(m.name, t.keys, self.horizon):
                 continue
-            self.store.add_arrival(m.name, t.key, t.duration_ms, source)
+            self.store.add_arrival(m.name, t.key, t.duration_ms, source, t.text_key)
             self.store.add_entries(
                 m.name,
                 [
@@ -230,6 +243,9 @@ class Engine:
             fields = {"match_method": match.method, "isrc": match.isrc}
             if e["duration_ms"] is None:
                 fields["duration_ms"] = match.duration_ms or DEFAULT_DURATION_MS
+            if not e["title"] and match.title:
+                fields |= {"title": match.title, "artists": match.artists or ""}
+                fields["album"] = match.album
             if match.apple_song_id:
                 fields["apple_song_id"] = match.apple_song_id
             else:

@@ -29,7 +29,16 @@ def isolated_state(request, tmp_path, monkeypatch):
 
     if request.node.get_closest_marker("live") is None:
         monkeypatch.setattr(settings, "data_dir", tmp_path)
-    cached = (srv.store, srv.developer_token, srv.apple_api, srv.apple_web, srv.library)
+    cached = (
+        srv.store,
+        srv.developer_token,
+        srv.apple_api,
+        srv.apple_web,
+        srv.library,
+        srv.mirrors,
+        srv.spotify,
+        srv.engine,
+    )
     for f in cached:
         f.cache_clear()
     yield
