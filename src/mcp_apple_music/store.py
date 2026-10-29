@@ -7,6 +7,7 @@ time; WAL lets them without an extra service.
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import sqlite3
 import time
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS window_entries (
 CREATE TABLE IF NOT EXISTS arrivals (
     mirror TEXT NOT NULL,
     key TEXT NOT NULL,
+    text_key TEXT,
     at REAL NOT NULL,
     duration_ms INTEGER,
     source TEXT NOT NULL
@@ -264,23 +266,31 @@ class Store:
                 "UPDATE mirrors SET last_sync = ? WHERE name = ?", (now, name)
             )
 
-    def arrived_within(self, mirror: str, key: str, seconds: float) -> bool:
+    def arrived_within(self, mirror: str, keys: list[str], seconds: float) -> bool:
+        """Whether any of a track's keys (Spotify ID, title|artists) arrived lately."""
+        marks = ", ".join("?" * len(keys))
         return (
             self._db.execute(
-                "SELECT 1 FROM arrivals WHERE mirror = ? AND key = ? AND at > ?",
-                (mirror, key, self._clock() - seconds),
+                f"SELECT 1 FROM arrivals WHERE mirror = ? AND at > ?"
+                f" AND (key IN ({marks}) OR text_key IN ({marks}))",
+                (mirror, self._clock() - seconds, *keys, *keys),
             ).fetchone()
             is not None
         )
 
     def add_arrival(
-        self, mirror: str, key: str, duration_ms: int | None, source: str
+        self,
+        mirror: str,
+        key: str,
+        duration_ms: int | None,
+        source: str,
+        text_key: str | None = None,
     ) -> None:
         now = self._clock()
         self._db.execute(
-            "INSERT INTO arrivals (mirror, key, at, duration_ms, source)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (mirror, key, now, duration_ms, source),
+            "INSERT INTO arrivals (mirror, key, text_key, at, duration_ms, source)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (mirror, key, text_key, now, duration_ms, source),
         )
         # Two days covers the dedupe horizon and the 24 h coverage figure.
         self._db.execute("DELETE FROM arrivals WHERE at < ?", (now - 2 * 86_400,))
@@ -343,3 +353,34 @@ class Store:
             " LIMIT ?",
             (mirror, limit),
         ).fetchall()
+
+    # -- match cache and feed cursors -------------------------------------------
+
+    def cached_match(self, key: str, miss_ttl: float) -> sqlite3.Row | None:
+        """A cached match; a miss only while younger than ``miss_ttl`` (Apple adds
+        songs, so a miss is worth asking again later)."""
+        return self._db.execute(
+            "SELECT * FROM matches WHERE key = ?"
+            " AND (apple_song_id IS NOT NULL OR at > ?)",
+            (key, self._clock() - miss_ttl),
+        ).fetchone()
+
+    def put_match(self, key: str, **fields) -> None:
+        cols = ["key", "at", *fields]
+        self._db.execute(
+            f"INSERT OR REPLACE INTO matches ({', '.join(cols)})"
+            f" VALUES ({', '.join('?' * len(cols))})",
+            (key, self._clock(), *fields.values()),
+        )
+
+    def feed_cursor(self, mirror: str) -> list[str] | None:
+        row = self._db.execute(
+            "SELECT ids FROM feed_cursor WHERE mirror = ?", (mirror,)
+        ).fetchone()
+        return json.loads(row["ids"]) if row else None
+
+    def set_feed_cursor(self, mirror: str, ids: list[str]) -> None:
+        self._db.execute(
+            "INSERT OR REPLACE INTO feed_cursor (mirror, ids, at) VALUES (?, ?, ?)",
+            (mirror, json.dumps(ids), self._clock()),
+        )
