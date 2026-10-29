@@ -4,6 +4,12 @@ MCP server for Apple Music: search the catalog and your library, manage playlist
 "mirrored" playlists in sync with an external source (a JSON feed, a webhook, or a Spotify
 playlist) as a rolling window.
 
+![A radio station's last 24 hours, mirrored into Apple Music](docs/images/rock-playlist-top.png)
+
+**Docs:** [architecture](docs/architecture.md) · [limitations](docs/limitations.md) ·
+[prior art](docs/prior-art.md) · [self-hosting](SELF-HOSTING.md) ·
+[decisions](docs/decisions/README.md)
+
 Run your own with Docker: [SELF-HOSTING.md](SELF-HOSTING.md). `compose.yaml` runs the
 published image on `127.0.0.1`; `compose.build.yaml` builds from source for a server behind
 a tunnel, bound to a private address.
@@ -36,6 +42,7 @@ idempotent: after an error, read the playlist before retrying.
 | `list_playlists` | `{"name_contains": "road"}` | Library playlists with track counts and `editable`. |
 | `get_playlist` | `{"playlist_id": "p.mine", "offset": 2, "limit": 2}` | Tracks with their `position`, plus `total` and `truncated`. |
 | `create_playlist` | `{"name": "ROCK 24", "song_ids": ["100"]}` | The new playlist, filled and re-read in one call. |
+| `set_playlist_description` | `{"playlist_id": "p.new", "description": "24/7 Rock.\n• Skip the first 3-4 tracks."}` | The new and `previous_description`, re-read and confirmed. Line breaks and bullets are kept. |
 | `rename_playlist` | `{"playlist_id": "p.new", "name": "ROCK"}` | The new name and `previous_name`. |
 | `delete_playlist` | `{"playlist_id": "p.mine", "confirm": true}` | The deleted playlist's name. Without `confirm` it asks you to check with the user. |
 | `add_tracks` | `{"playlist_id": "p.mine", "song_ids": ["100"], "isrcs": ["USQX91300108", "usqx91300108", "GBAYE0000001", "abc"]}` | Where each song landed; unmatched and invalid ISRCs listed. At most 25 per call. |
@@ -93,14 +100,10 @@ the window's length, and is listed by `mirror_status`.
 name). With `playlist_id`, the mirror adopts that playlist and keeps its link. Its tracks
 become the oldest part of the window, so they leave one by one as new tracks arrive.
 
-**For listeners:** don't start at the top, and don't shuffle. The top track is always the
-next to leave, and the top moves by the length of each arriving track, not one track at a
-time: one 11-minute song arriving pushes out 11 minutes from the top, which can be five
-2-minute songs at once. "Skip the first 2-3 tracks" is not enough when those are short. Start
-about 15 minutes in, more if the station plays very long tracks. From there, listening without
-long pauses keeps you ahead, because talk and ads move the top more slowly than you play
-music. If the playing track is removed anyway, the iPhone skips to the next one and the Mac
-plays it to the end.
+**For listeners:** skip the first 3-4 tracks, and don't shuffle. The top track is always the
+next to leave; when the playing track is removed, the iPhone skips to the next one and the
+Mac plays it to the end. 3-4 tracks is a rule of thumb: one long song arriving can push out
+several short ones at once ([limitations](docs/limitations.md#listening-while-the-playlist-changes)).
 
 **Audit:** every change a mirror makes (added, removed, skipped, repair, error) is kept for
 30 days in the data volume. `mirror_audit` summarises it per day and checks that the playlist
@@ -112,6 +115,9 @@ telemetry: `created`, `adopted`, `skipped`, `ambiguous_match`, `repair`, `drift_
 `feed_failed`, `backoff`, `sync_failed`.
 
 ## Credits
+
+What this server borrows from other Apple Music projects, and where it differs:
+[docs/prior-art.md](docs/prior-art.md).
 
 The web-player rail (`src/mcp_apple_music/apple_web.py`: amp-api endpoints and headers,
 web-player token extraction, `canEdit` classification) and the rolling-window 429 handling

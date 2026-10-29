@@ -173,11 +173,20 @@ class AppleWebPlayer(RailClient):
         return Write(self.rail, resp.status_code)
 
     async def rename_playlist(self, playlist_id: str, name: str) -> Write:
+        return await self._patch(playlist_id, {"name": name})
+
+    async def set_playlist_description(
+        self, playlist_id: str, description: str
+    ) -> Write:
+        # Sent as a string; Apple reads it back as {"standard": ...} (checked live).
+        return await self._patch(playlist_id, {"description": description})
+
+    async def _patch(self, playlist_id: str, attributes: dict) -> Write:
         resp = await self._request(
             "PATCH",
             f"/v1/me/library/playlists/{playlist_id}",
             user=True,
-            json={"attributes": {"name": name}},
+            json={"attributes": attributes},
         )
         return Write(self.rail, resp.status_code)
 

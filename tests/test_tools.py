@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import json
 import time
 
@@ -362,6 +363,7 @@ async def test_create_keeps_the_playlist_when_adding_fails(rails):
     ("tool", "args"),
     [
         ("rename_playlist", {"name": "x"}),
+        ("set_playlist_description", {"description": "x"}),
         ("delete_playlist", {}),  # refused before even asking for confirm
         ("add_tracks", {"song_ids": ["1"]}),
         ("remove_tracks", {"positions": [1]}),
@@ -599,3 +601,46 @@ async def test_sign_in_link_works_once(rails):
         first = await http.get(path.path, params=dict(path.params))
         second = await http.get(path.path, params=dict(path.params))
     assert (first.status_code, second.status_code) == (200, 403)
+
+
+async def test_set_description_is_read_back(rails):
+    srv.store().own("p.mine", "test")
+    old = {"standard": "24/7 Rock\n\t•\tskip at least the first 2-3 tracks."}
+    new = "24/7 Rock\n\t•\tskip at least the first 3-4 tracks."
+    rails.on(
+        "GET",
+        f"{LISTS}/p.mine",
+        200,
+        {
+            "data": [
+                {
+                    **playlist("p.mine", "ROCK"),
+                    "attributes": {"name": "ROCK", "description": old},
+                }
+            ]
+        },
+    )
+    rails.on(
+        "GET",
+        f"{LISTS}/p.mine",
+        200,
+        {
+            "data": [
+                {
+                    **playlist("p.mine", "ROCK"),
+                    "attributes": {"name": "ROCK", "description": {"standard": new}},
+                }
+            ]
+        },
+    )
+    rails.on("PATCH", f"{LISTS}/p.mine", 204)
+    out = await call(
+        "set_playlist_description", {"playlist_id": "p.mine", "description": new}
+    )
+    assert (out["confirmation"], out["description"], out["previous_description"]) == (
+        "read_back",
+        new,
+        old["standard"],
+    )
+    sent = [r for r in rails.requests if r.method == "PATCH"]
+    assert json.loads(sent[0].content) == {"attributes": {"description": new}}
