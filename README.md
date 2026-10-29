@@ -42,6 +42,7 @@ idempotent: after an error, read the playlist before retrying.
 | `remove_tracks` | `{"playlist_id": "p.mine", "positions": [2]}` | What was removed from which position. A lower copy of a repeated song is refused. |
 | `sign_in_link` | `{}` | A single-use, 15-minute link to the Apple Music sign-in page, for a person to open. |
 | `mirror_status` | `{"name": "rock"}` | Window size, last sync and error, source coverage, tracks Apple lacks, ambiguous matches, recent repairs. |
+| `mirror_audit` | `{"name": "rock", "hours": 72}` | Per-day counts of tracks added, removed and skipped, repairs and errors, the latest changes, and `in_step`. |
 | `sync_mirror` | `{"name": "rock"}` | Polls and syncs now; the tracks added, removed and failed. Needs `MIRRORS_ENABLED=true`. |
 
 ## Mirrors
@@ -92,8 +93,19 @@ the window's length, and is listed by `mirror_status`.
 name). With `playlist_id`, the mirror adopts that playlist and keeps its link. Its tracks
 become the oldest part of the window, so they leave one by one as new tracks arrive.
 
-**For listeners:** start a few tracks in. The top track is always the next to leave, and
-when the playing track is removed the iPhone skips to the next one.
+**For listeners:** don't start at the top, and don't shuffle. The top track is always the
+next to leave, and the top moves by the length of each arriving track, not one track at a
+time: one 11-minute song arriving pushes out 11 minutes from the top, which can be five
+2-minute songs at once. "Skip the first 2-3 tracks" is not enough when those are short. Start
+about 15 minutes in, more if the station plays very long tracks. From there, listening without
+long pauses keeps you ahead, because talk and ads move the top more slowly than you play
+music. If the playing track is removed anyway, the iPhone skips to the next one and the Mac
+plays it to the end.
+
+**Audit:** every change a mirror makes (added, removed, skipped, repair, error) is kept for
+30 days in the data volume. `mirror_audit` summarises it per day and checks that the playlist
+on Apple holds exactly what the window expects (`in_step`). Adopting a playlist that holds
+more than the window trims the excess 25 tracks per sync, so Apple's rate limit isn't hit.
 
 Events go to stderr as JSON lines (`{"mirror_event": "skipped", …}`) next to the usage
 telemetry: `created`, `adopted`, `skipped`, `ambiguous_match`, `repair`, `drift_refused`,

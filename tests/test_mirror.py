@@ -386,3 +386,65 @@ async def test_song_listed_under_another_id_is_followed_not_churned(engine, appl
         1,
         None,
     )
+
+
+# -- short and long songs (Blur's "Song 2" is 2:01, Supertramp's "Fool's Overture" 10:55)
+
+
+async def test_long_arrival_pushes_out_several_short_tracks_at_once(engine, apple):
+    """The top moves by the arriving track's length, not by one track: a lead of
+    "2-3 tracks" is gone when those are short and a long one arrives."""
+    m = rock(window_seconds=15 * 60)
+    for t in ["S1", "S2", "S3", "S4", "S5"]:
+        push(engine, m, t, minutes=2)
+    pid = (await engine.sync(m)).playlist_id
+    push(engine, m, "Fools-Overture", minutes=11)
+    res = await engine.sync(m)
+    assert res.removed == ["S1", "S2", "S3"]  # 6 of 10 minutes leave in one sync
+    assert apple.playlists[pid] == ["S4", "S5", "Fools-Overture"]
+
+
+async def test_short_arrival_pushes_out_a_long_top_track(engine, apple):
+    """Whole tracks only: the window then sits up to one track under its length."""
+    m = rock(window_seconds=15 * 60)
+    push(engine, m, "Fools-Overture", minutes=11)
+    push(engine, m, "S1", minutes=2)
+    push(engine, m, "S2", minutes=2)
+    pid = (await engine.sync(m)).playlist_id
+    push(engine, m, "S3", minutes=2)
+    res = await engine.sync(m)
+    assert res.removed == ["Fools-Overture"]
+    assert apple.playlists[pid] == ["S1", "S2", "S3"]  # 6 minutes in a 15-minute window
+
+
+async def test_removals_are_spread_over_syncs(engine, apple):
+    """Adopting hours more than the window: 25 removals per sync, not all at once."""
+    old = [f"O{i}" for i in range(35)]
+    apple.playlists["p.rock"], apple.names["p.rock"] = list(old), "x"
+    m = rock(playlist_id="p.rock")  # 35 one-minute tracks, 5-minute window
+    first = await engine.sync(m)
+    assert (
+        len(first.removed) == 25 and "the rest go in the next syncs" in first.notes[0]
+    )
+    second = await engine.sync(m)
+    assert len(second.removed) == 5 and apple.playlists["p.rock"] == old[30:]
+    counts = {r["action"]: r["n"] for r in engine.store.history_counts("rock", 0)}
+    assert counts == {"adopted": 1, "removed": 30}
+
+
+async def test_history_records_what_changed(engine, apple, matcher):
+    matcher.missing = {"B"}
+    m = rock()
+    push(engine, m, "A", "B")
+    pid = (await engine.sync(m)).playlist_id
+    apple.playlists[pid].append("X")
+    await engine.sync(m)
+    rows = [
+        (r["action"], r["title"]) for r in reversed(engine.store.history("rock", 0))
+    ]
+    assert rows == [
+        ("created", "Station Rock"),
+        ("skipped", "B – Artist"),
+        ("added", "A – Artist"),
+        ("repair", "removed stray"),
+    ]

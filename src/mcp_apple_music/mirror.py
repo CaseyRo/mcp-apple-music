@@ -38,6 +38,9 @@ DEDUPE_HORIZON_SECONDS = 3600
 DEFAULT_DURATION_MS = 240_000
 MAX_REPAIRS = 10  # per sync; a bigger drift is likelier a bad read than real
 APPEND_BATCH = 25
+# Removals are one web-rail call each: an adoption that trims hours at once is
+# spread over several syncs instead of tripping Apple's rate limit.
+MAX_REMOVALS_PER_SYNC = 25
 GROWTH_LIMIT = 1.5  # without removal, appends pause past this many windows
 NOT_SHOWN = "Apple accepted the add, but the song never showed up in the playlist"
 _ESCALATE = (RateLimited, UserTokenMissing, UserTokenRejected, RailUnavailable)
@@ -219,6 +222,7 @@ class Engine:
         self.store.own(made.id, f"created by mirror {m.name}")
         self.store.bind_mirror(m.name, made.id)
         event("created", m.name, playlist_id=made.id)
+        self.store.log(m.name, "created", m.playlist_name, made.id)
         return made.id
 
     async def _adopt(self, m: Mirror) -> None:
@@ -230,6 +234,7 @@ class Engine:
         # Its tracks are the oldest part of the window and leave by the window rule.
         self.store.add_entries(m.name, [_seed(t) for t in tracks], before=True)
         event("adopted", m.name, playlist_id=m.playlist_id, tracks=len(tracks))
+        self.store.log(m.name, "adopted", m.playlist_id, f"{len(tracks)} tracks")
 
     # -- sync -------------------------------------------------------------------
 
@@ -274,6 +279,9 @@ class Engine:
                     spotify_id=e["spotify_id"],
                     isrc=match.isrc,
                     reason=fields["unavailable_reason"],
+                )
+                self.store.log(
+                    m.name, "skipped", label(e), fields["unavailable_reason"]
                 )
             self.store.update_entry(m.name, e["seq"], **fields)
 
@@ -325,6 +333,7 @@ class Engine:
                 " and new arrivals; left as is (more likely a bad read than real)."
             )
             event("drift_refused", m.name, drift=drift)
+            self.store.log(m.name, "drift refused", detail=f"{drift} tracks")
 
         excess = +(expected + strays)
         if removals:
@@ -337,6 +346,8 @@ class Engine:
                 )
         for song, n in removed.items():
             res.removed += [name[song]] * n
+            for _ in range(min(n, expected[song])):
+                self.store.log(m.name, "removed", name[song], "expired")
             for _ in range(n - min(n, expected[song])):
                 self._repair(m, res, "removed stray", f"{name[song]} ({song})")
 
@@ -368,6 +379,13 @@ class Engine:
         self, pid: str, excess: Counter, lib_id: dict, actual: Counter, res: SyncResult
     ) -> tuple[Counter, bool]:
         """Remove the excess copies. Returns what went, and whether removal is down."""
+        wanted = [s for s, n in excess.items() for _ in range(n)]  # playlist order
+        if len(wanted) > MAX_REMOVALS_PER_SYNC:
+            res.notes.append(
+                f"Removed the first {MAX_REMOVALS_PER_SYNC} of {len(wanted)} copies due"
+                " to leave; the rest go in the next syncs."
+            )
+            excess = Counter(wanted[:MAX_REMOVALS_PER_SYNC])
         ids = [lib_id[s] for s, n in excess.items() for _ in range(n)]
         if not ids:
             return Counter(), False
@@ -425,6 +443,7 @@ class Engine:
                     fields["apple_song_id"] = as_listed
                 self.store.update_entry(m.name, e["seq"], **fields)
                 res.added.append(label(e))
+                self.store.log(m.name, "added", label(e), e["match_method"] or "")
                 if e["placed"]:  # it had been in the playlist before
                     self._repair(m, res, "re-appended", label(e))
 
@@ -432,8 +451,10 @@ class Engine:
         self.store.update_entry(m.name, e["seq"], unavailable_reason=reason)
         res.unavailable.append(label(e))
         event("skipped", m.name, title=e["title"], artists=e["artists"], reason=reason)
+        self.store.log(m.name, "skipped", label(e), reason)
 
     def _repair(self, m: Mirror, res: SyncResult, action: str, detail: str) -> None:
         self.store.add_repair(m.name, action, detail)
+        self.store.log(m.name, "repair", action, detail)
         res.repairs.append(f"{action}: {detail}")
         event("repair", m.name, action=action, detail=detail)

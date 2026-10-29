@@ -17,7 +17,8 @@ from pathlib import Path
 
 APPLE_USER_TOKEN = "apple_music_user"
 LINK_TTL_SECONDS = 15 * 60
-SCHEMA_VERSION = 2  # 1: tokens, owned playlists, links; 2: mirror tables
+SCHEMA_VERSION = 3  # 1: tokens, owned playlists, links; 2: mirror tables; 3: history
+HISTORY_DAYS = 30
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tokens (
@@ -86,6 +87,15 @@ CREATE TABLE IF NOT EXISTS feed_cursor (
     ids TEXT NOT NULL,
     at REAL NOT NULL
 );
+-- What each mirror did, for audits: added, removed, skipped, repair, error, ...
+CREATE TABLE IF NOT EXISTS history (
+    mirror TEXT NOT NULL,
+    at REAL NOT NULL,
+    action TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS history_by_mirror ON history (mirror, at);
 CREATE TABLE IF NOT EXISTS checks (
     name TEXT PRIMARY KEY,
     ok INTEGER NOT NULL,
@@ -262,6 +272,10 @@ class Store:
             " ON CONFLICT (name) DO NOTHING",
             (name, now),
         )
+        row = self.mirror(name)
+        new_episode = (row["last_sync"] or 0) >= (row["last_error_at"] or 0)
+        if error and (new_episode or row["last_error"] != error):
+            self.log(name, "error", detail=error)  # once per failure, not per retry
         if error:
             self._db.execute(
                 "UPDATE mirrors SET last_error = ?, last_error_at = ? WHERE name = ?",
@@ -346,6 +360,31 @@ class Store:
             "DELETE FROM window_entries WHERE mirror = ? AND seq = ?",
             [(mirror, s) for s in seqs],
         )
+
+    def log(self, mirror: str, action: str, title: str = "", detail: str = "") -> None:
+        now = self._clock()
+        self._db.execute(
+            "INSERT INTO history (mirror, at, action, title, detail) VALUES (?, ?, ?, ?, ?)",
+            (mirror, now, action, title, detail),
+        )
+        self._db.execute(
+            "DELETE FROM history WHERE at < ?", (now - HISTORY_DAYS * 86_400,)
+        )
+
+    def history(self, mirror: str, since: float, limit: int = 50) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM history WHERE mirror = ? AND at > ?"
+            " ORDER BY at DESC, rowid DESC LIMIT ?",
+            (mirror, since, limit),
+        ).fetchall()
+
+    def history_counts(self, mirror: str, since: float) -> list[sqlite3.Row]:
+        """(day, action, n) rows, days in UTC."""
+        return self._db.execute(
+            "SELECT date(at, 'unixepoch') AS day, action, COUNT(*) AS n FROM history"
+            " WHERE mirror = ? AND at > ? GROUP BY day, action ORDER BY day",
+            (mirror, since),
+        ).fetchall()
 
     def add_repair(self, mirror: str, action: str, detail: str) -> None:
         self._db.execute(

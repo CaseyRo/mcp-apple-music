@@ -76,7 +76,8 @@ Apple Music: search the catalog and the owner's library, and manage playlists.
 - If a tool says sign-in is needed, call sign_in_link and give the URL to the
   user to open in their browser; never open it yourself. Retry after they confirm.
 - Mirrors keep a playlist equal to a source's last hours of music (mirror_status,
-  sync_mirror). Don't edit a mirror's playlist by hand: the next sync undoes it.
+  mirror_audit, sync_mirror). Don't edit a mirror's playlist by hand: the next
+  sync undoes it.
 """
 
 
@@ -497,7 +498,8 @@ SIGN_IN_HINT = (
     "browser (don't open it yourself; it works once), then retry once they confirm."
 )
 NOT_EDITABLE = (
-    "This server only edits playlists it created. For an editable copy, call "
+    "This server only edits playlists it created or a mirror adopted. For an "
+    "editable copy, call "
     "create_playlist with the songs' catalog_id values (from get_playlist)."
 )
 _ISRC = re.compile(r"^[A-Z]{2}[A-Z0-9]{3}\d{7}$")
@@ -1359,6 +1361,104 @@ async def sync_mirror(name: str | None = None) -> SyncReport:
         f" Failed: {', '.join(errors)}." if errors else ""
     )
     return SyncReport(summary=summary, results=results)
+
+
+def _change_line(r) -> str:
+    detail = f"({r['detail']})" if r["detail"] else ""
+    return " ".join(x for x in (_iso(r["at"]), r["action"], r["title"], detail) if x)
+
+
+class MirrorAudit(BaseModel):
+    name: str
+    playlist_id: str | None
+    playlist_tracks: int | None = Field(description="Read from Apple now.")
+    expected_tracks: int = Field(
+        description="Copies the window says the playlist holds (expiring ones included)."
+    )
+    in_step: bool | None = Field(
+        description="playlist_tracks == expected_tracks; None if Apple couldn't be read."
+    )
+    window_tracks: int
+    window_hours: float
+    coverage: float | None
+    counts: dict[str, int] = Field(
+        description="Changes in the period by kind: added, removed, skipped, repair, "
+        "error, adopted, created, drift refused."
+    )
+    per_day: dict[str, dict[str, int]] = Field(description="The same, per UTC day.")
+    errors: list[str] = Field(description="Failures in the period, newest first.")
+    recent: list[str] = Field(description="The latest changes, newest first.")
+
+
+class AuditReport(BaseModel):
+    summary: str
+    hours: int
+    mirrors: list[MirrorAudit]
+
+
+@mcp.tool(tags=_TAGS, annotations=ToolAnnotations(title="Audit mirrors", **_READ))
+async def mirror_audit(
+    name: str | None = None, hours: Annotated[int, Field(ge=1, le=720)] = 72
+) -> AuditReport:
+    """[apple-music] What each mirror did over the last `hours` (default 72, at
+    most 30 days): counts of tracks added, removed and skipped, repairs and
+    errors, per day, the latest changes, and whether the playlist on Apple holds
+    exactly what the window expects (`in_step`). Omit `name` for all mirrors."""
+    st = store()
+    since = datetime.now(timezone.utc).timestamp() - hours * 3600
+    out = []
+    for mirror in _selected(name):
+        row = st.mirror(mirror.name)
+        entries = st.entries(mirror.name)
+        live = [e for e in entries if not e["expired"]]
+        expected = sum(
+            1
+            for e in entries
+            if e["placed"] and e["apple_song_id"] and not e["unavailable_reason"]
+        )
+        listed = None
+        if row and row["playlist_id"]:
+            with contextlib.suppress(AppleError, ToolError):
+                listed = len(
+                    (await apple_api().playlist_tracks(row["playlist_id"])).data
+                )
+        counts: dict[str, int] = {}
+        per_day: dict[str, dict[str, int]] = {}
+        for r in st.history_counts(mirror.name, since):
+            counts[r["action"]] = counts.get(r["action"], 0) + r["n"]
+            per_day.setdefault(r["day"], {})[r["action"]] = r["n"]
+        changes = st.history(mirror.name, since, 200)
+        out.append(
+            MirrorAudit(
+                name=mirror.name,
+                playlist_id=row["playlist_id"] if row else None,
+                playlist_tracks=listed,
+                expected_tracks=expected,
+                in_step=None if listed is None else listed == expected,
+                window_tracks=len(live),
+                window_hours=round(
+                    sum(e["duration_ms"] or 0 for e in live) / 3_600_000, 2
+                ),
+                coverage=coverage(st, mirror, since + hours * 3600)[0],
+                counts=counts,
+                per_day=per_day,
+                errors=[_change_line(r) for r in changes if r["action"] == "error"][
+                    :20
+                ],
+                recent=[_change_line(r) for r in changes[:30]],
+            )
+        )
+    off = [a.name for a in out if a.in_step is False]
+    summary = (
+        f"{len(out)} mirrors over {hours} h: "
+        + ", ".join(
+            f"{a.name} +{a.counts.get('added', 0)}/-{a.counts.get('removed', 0)}"
+            + (f", {a.counts['error']} errors" if a.counts.get("error") else "")
+            for a in out
+        )
+        + (f". Out of step: {', '.join(off)}." if off else ".")
+    )
+    return AuditReport(summary=summary, hours=hours, mirrors=out)
 
 
 def main(argv: list[str] | None = None) -> None:
