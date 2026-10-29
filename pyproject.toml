@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.12",
     "pydantic-settings>=2.14.2",
     "pyjwt[crypto]>=2.10",
+    "pyyaml>=6.0",
     # Security floors (transitive deps of fastmcp; pinned to address CVEs)
     "authlib>=1.7.0",            # GHSA: CSRF in token cache handling
     "python-multipart>=0.0.32",  # GHSA: DoS via unbounded multipart headers

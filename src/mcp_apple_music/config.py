@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     apple_token_ttl_seconds: int = 7 * 86_400
     apple_token_renew_before_seconds: int = 86_400
 
+    # Mirrors (see mirrors.example.yaml). Off by default: adopting writes to
+    # playlists people may follow, so turning the loop on is a deliberate step.
+    mirrors_file: Path | None = None
+    mirrors_enabled: bool = False
+    # POST /hooks/<secret> exists only when this is set.
+    webhook_secret: SecretStr = SecretStr("")
+
     model_config = {"env_prefix": "", "case_sensitive": False}
 
     @model_validator(mode="after")
