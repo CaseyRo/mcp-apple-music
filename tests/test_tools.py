@@ -575,7 +575,8 @@ async def test_invalid_user_token_names_the_sign_in_step(rails):
     assert rails.requests == []
 
 
-async def test_rejected_user_token_is_marked_and_explained(rails):
+async def test_rejected_user_token_is_marked_and_explained(rails, monkeypatch):
+    monkeypatch.setattr("mcp_apple_music.rails.REJECTION_GRACE_SECONDS", 0)
     rails.on("GET", LISTS, 403, {"errors": [{"title": "Forbidden"}]})
     rails.routes[("GET", "/us/new")] = [
         httpx.Response(503)

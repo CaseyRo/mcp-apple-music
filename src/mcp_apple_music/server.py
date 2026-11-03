@@ -405,6 +405,7 @@ async def apple_sign_in_complete(request: Request) -> JSONResponse:
     try:
         storefront = await api.storefront()
     except UserTokenRejected:
+        store().mark_token_invalid(APPLE_USER_TOKEN)  # a token that never worked
         return answer(
             400, "Apple rejected this sign-in. Open a new link and try again."
         )

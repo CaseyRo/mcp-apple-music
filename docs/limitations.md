@@ -15,8 +15,10 @@ those limits. Most of them come from Apple Music itself.
   - search, create and add keep working;
   - the daily canary shows it within a day.
 - **The Apple Music sign-in expires at an undocumented time.** Reported lifetimes range
-  from days to six months. `/health` turns `degraded` when Apple rejects the token, and warns
-  from day 150. Signing in again takes one page.
+  from days to six months. Apple also answers 401/403 during its own auth hiccups, so
+  the server flags the sign-in invalid only after rejections persist for 15 minutes with
+  no success in between; until then mirrors fail and retry. `/health` turns `degraded`
+  once it is flagged, and warns from day 150. Signing in again takes one page.
 - **One Apple account per instance.** Every playlist lives in that account's library.
 - **Rate limits are undocumented.** After a 429 the server backs off that rail for ten
   minutes. Taking over a long playlist removes at most 25 tracks per sync for that reason.

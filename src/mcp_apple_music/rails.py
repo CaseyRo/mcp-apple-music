@@ -20,6 +20,11 @@ WEB = "web"
 # so an empty answer this soon after a 429 may be the throttle, not a real "none".
 THROTTLE_WINDOW_SECONDS = 3600
 
+# Apple answers 401/403 (and 500 "Unable to authenticate request") on a working sign-in
+# during its own auth hiccups. Marking the token invalid is a latch only a new sign-in
+# undoes, so it takes rejections that persist this long with no success in between.
+REJECTION_GRACE_SECONDS = 900
+
 
 class AppleError(Exception):
     """Apple refused or failed a request. ``status`` is None when nothing came back."""
@@ -71,6 +76,9 @@ class Throttle:
         self._clock = clock
         self._last_429: float | None = None
 
+    def now(self) -> float:
+        return self._clock()
+
     def hit(self) -> None:
         self._last_429 = self._clock()
 
@@ -119,6 +127,7 @@ class RailClient:
             base_url=self.base_url, timeout=30, transport=transport, headers=headers
         )
         self.throttle = throttle or Throttle()
+        self._rejected_since: float | None = None
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -157,7 +166,11 @@ class RailClient:
             self.throttle.hit()
             raise RateLimited(self.rail, 429, "rate limited by Apple; retry later")
         if user and resp.status_code in (401, 403):
-            self._on_rejected()
+            now = self.throttle.now()
+            if self._rejected_since is None:
+                self._rejected_since = now
+            if now - self._rejected_since >= REJECTION_GRACE_SECONDS:
+                self._on_rejected()
             raise UserTokenRejected(
                 self.rail, resp.status_code, f"{error_reason(resp)}; sign in again"
             )
@@ -165,6 +178,8 @@ class RailClient:
             return None
         if resp.status_code >= 400:
             raise AppleError(self.rail, resp.status_code, error_reason(resp))
+        if user:
+            self._rejected_since = None
         return resp
 
     async def _pages(self, path: str, **params) -> list[dict]:
