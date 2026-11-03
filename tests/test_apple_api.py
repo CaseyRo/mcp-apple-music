@@ -10,6 +10,7 @@ import pytest
 from mcp_apple_music.apple_api import AppleMusicAPI
 from mcp_apple_music.devtoken import DeveloperToken
 from mcp_apple_music.rails import (
+    REJECTION_GRACE_SECONDS,
     THROTTLE_WINDOW_SECONDS,
     AppleError,
     RateLimited,
@@ -174,7 +175,7 @@ async def test_rejected_write_reports_rail_status_and_reason(client, apple):
 
 
 @pytest.mark.parametrize("status", [401, 403])
-async def test_user_token_rejected_marks_it(client, apple, user, status):
+async def test_user_token_rejected_marks_it(client, apple, user, clock, status):
     apple.on(
         "GET",
         "/v1/me/library/playlists",
@@ -184,7 +185,26 @@ async def test_user_token_rejected_marks_it(client, apple, user, status):
     with pytest.raises(UserTokenRejected) as e:
         await client.library_playlists()
     assert e.value.status == status and "sign in again" in e.value.reason
+    assert user["rejected"] == 0  # one rejection may be an Apple hiccup
+    clock.now += REJECTION_GRACE_SECONDS
+    with pytest.raises(UserTokenRejected):
+        await client.library_playlists()
     assert user["rejected"] == 1
+
+
+async def test_a_success_clears_the_rejection_streak(client, apple, user, clock):
+    path = "/v1/me/library/playlists"
+    refused = {"errors": [{"title": "Forbidden"}]}
+    apple.on("GET", path, 403, refused)
+    apple.on("GET", path, 200, {"data": []})
+    apple.on("GET", path, 403, refused)
+    with pytest.raises(UserTokenRejected):
+        await client.library_playlists()
+    await client.library_playlists()
+    clock.now += REJECTION_GRACE_SECONDS
+    with pytest.raises(UserTokenRejected):
+        await client.library_playlists()
+    assert user["rejected"] == 0
 
 
 async def test_catalog_401_does_not_blame_user_token(client, apple, user):

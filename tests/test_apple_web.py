@@ -16,8 +16,10 @@ from mcp_apple_music.apple_web import (
 )
 from mcp_apple_music.devtoken import DeveloperToken
 from mcp_apple_music.rails import (
+    REJECTION_GRACE_SECONDS,
     RailUnavailable,
     RateLimited,
+    Throttle,
     UserTokenMissing,
     UserTokenRejected,
 )
@@ -54,6 +56,7 @@ async def web(apple, clock, user):
         on_user_token_rejected=rejected,
         transport=httpx.MockTransport(apple),
         clock=clock,
+        throttle=Throttle(clock),
     )
     yield w
     await w.aclose()
@@ -179,8 +182,12 @@ async def test_persistent_401_rejects_user_token(web, apple, clock, user):
     )
     with pytest.raises(UserTokenRejected) as e:
         await web.delete_playlist("p.1")
-    assert e.value.rail == "web" and user["rejected"] == 1
+    assert e.value.rail == "web" and user["rejected"] == 0
     assert len(apple.sent("/v1/me/library/playlists/p.1")) == 2  # one retry, no more
+    clock.now += REJECTION_GRACE_SECONDS
+    with pytest.raises(UserTokenRejected):
+        await web.delete_playlist("p.1")
+    assert user["rejected"] == 1
 
 
 async def test_writes_send_the_web_player_calls(web, apple, clock):
