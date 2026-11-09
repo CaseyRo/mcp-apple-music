@@ -5,7 +5,7 @@ on:
     types: [opened, reopened, synchronize]
 
 permissions:
-  contents: read
+  contents: write  # gh pr merge --auto merges at once when checks are already green
   pull-requests: write
 
 # Never checks out PR code under pull_request_target. Patch bumps are queued for
