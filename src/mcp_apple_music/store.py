@@ -286,6 +286,18 @@ class Store:
                 "UPDATE mirrors SET last_sync = ? WHERE name = ?", (now, name)
             )
 
+    def failing_since(self, name: str) -> float | None:
+        """When the mirror's current failure episode began; None if it isn't failing."""
+        row = self.mirror(name)
+        if not row or not row["last_error"]:
+            return None
+        if (row["last_error_at"] or 0) <= (row["last_sync"] or 0):
+            return None
+        return self._db.execute(
+            "SELECT MIN(at) FROM history WHERE mirror = ? AND action = 'error' AND at > ?",
+            (name, row["last_sync"] or 0),
+        ).fetchone()[0]
+
     def arrived_within(self, mirror: str, keys: list[str], seconds: float) -> bool:
         """Whether any of a track's keys (Spotify ID, title|artists) arrived lately."""
         marks = ", ".join("?" * len(keys))
