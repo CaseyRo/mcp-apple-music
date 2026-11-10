@@ -328,6 +328,11 @@ async def health_check(request: Request) -> JSONResponse:
     )
 
 
+# One failed sync (a feed hiccup, an Apple 500) is retried within minutes; /health
+# names a mirror only once its failures have lasted three Gatus checks.
+FAILING_GRACE_SECONDS = 15 * 60
+
+
 def _failing(row) -> bool:
     return bool(row and row["last_error"]) and (row["last_error_at"] or 0) > (
         row["last_sync"] or 0
@@ -341,10 +346,15 @@ def _mirrors_health() -> dict:
         return {"enabled": settings.mirrors_enabled, "config_error": str(e)}
     now = datetime.now(timezone.utc).timestamp()
     rows = {m.name: store().mirror(m.name) for m in configured}
+    since = {name: store().failing_since(name) for name in rows}
     return {
         "enabled": settings.mirrors_enabled,
         "count": len(configured),
-        "failing": [name for name, row in rows.items() if _failing(row)],
+        "failing": [
+            name
+            for name, t in since.items()
+            if t is not None and now - t >= FAILING_GRACE_SECONDS
+        ],
         "each": [
             {
                 "name": m.name,

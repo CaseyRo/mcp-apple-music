@@ -206,3 +206,23 @@ async def test_audit_counts_changes_and_checks_the_playlist(
     (a,) = (await call("mirror_audit", {"name": "rock"}))["mirrors"]
     assert a["in_step"] is False
     assert "Out of step: rock" in (await call("mirror_audit"))["summary"]
+
+
+async def test_health_ignores_a_failure_until_it_lasts(configured):
+    st = srv.store()
+    st.record_sync("rock")
+    st.record_sync("rock", "feed: Server disconnected")
+
+    async def failing() -> list[str]:
+        transport = httpx.ASGITransport(app=srv.mcp.http_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            return (await c.get("/health")).json()["mirrors"]["failing"]
+
+    assert await failing() == []  # one failed sync: retried, not reported
+    # the episode began 16 minutes ago and is still failing
+    st._db.execute("UPDATE history SET at = at - 960 WHERE mirror = 'rock'")
+    st._db.execute("UPDATE mirrors SET last_sync = last_sync - 961 WHERE name = 'rock'")
+    st.record_sync("rock", "api rail: HTTP 500")
+    assert await failing() == ["rock"]
+    st.record_sync("rock")  # recovered
+    assert await failing() == []
